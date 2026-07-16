@@ -20,21 +20,29 @@ cube_prim_r = DynamicCuboid(                              # 4. Prim
 
 world.scene.add_default_ground_plane()                  # 5. Scene
 world.scene.add(cube_prim_r)
-step_count = 0
-
-while simulation_app.is_running():
-    world.step(render=True)
-    time.sleep(0.01)
-    step_count += 100
-    if step_count % 100 == 0:
-        print(f"step:{step_count}")
-    elif step_count % 300 == 0:
-        cube_prim_r.set_world_pose(position=np.array([0.0, 0.0, 0.5]))
-    # 스탑 후 시작 시 step_count = 0으로 리셋 필요
 
 world.reset()
+count = 0
+was_playing = False
 
 while simulation_app.is_running():                      # 6. Simulation
     world.step(render=True)
+    
+    is_playing = world.is_playing()
+    
+    if is_playing and not was_playing:
+        count = 0
+        print("시작 버튼 눌림: count 0으로 초기화")
+
+    if is_playing:
+        count += 1
+        
+        if (count % 100) == 0:
+            print(count)
+            if (count % 300) == 0:
+                cube_prim_r.set_world_pose(position=np.array([0.0, 0.0, 1.0]))
+                print('큐브 이동')
+                
+    was_playing = is_playing
 
 simulation_app.close()
