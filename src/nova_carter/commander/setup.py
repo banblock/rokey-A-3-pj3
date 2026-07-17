@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'amr_transport'
+package_name = 'commander'
 
 setup(
     name=package_name,
@@ -16,15 +16,14 @@ setup(
     maintainer='heu',
     maintainer_email='jerrywpfl@gmail.com',
     description='TODO: Package description',
-    license='TODO: License declaration',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',
         ],
     },
     entry_points={
-        "console_scripts": [
-        "destination_controller = amr_transport.destination_controller:main",
+        'console_scripts': [
         ],
     },
 )
