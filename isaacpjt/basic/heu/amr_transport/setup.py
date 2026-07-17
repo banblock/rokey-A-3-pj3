@@ -23,7 +23,8 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': [
+        "console_scripts": [
+        "destination_controller = amr_transport.destination_controller:main",
         ],
     },
 )

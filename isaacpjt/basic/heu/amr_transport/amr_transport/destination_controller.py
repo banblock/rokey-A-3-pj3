@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import math
 from typing import Dict, Tuple
 
@@ -18,7 +16,7 @@ class DestinationController(Node):
     def __init__(self) -> None:
         super().__init__("destination_controller")
 
-        # 실제 Isaac Sim 창고 좌표에 맞게 수정해야 합니다.
+        # 좌표는 임의 설정 상태
         self.destinations: Dict[str, Tuple[float, float, float]] = {
             "STORAGE": (5.0, 3.0, 1.57),
             "DISCARD": (5.0, -3.0, -1.57),
