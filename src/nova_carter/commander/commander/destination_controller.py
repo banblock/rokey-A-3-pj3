@@ -1,5 +1,6 @@
 import math
 from typing import Dict, Tuple
+from collections import deque
 
 import rclpy
 from action_msgs.msg import GoalStatus
@@ -11,7 +12,7 @@ from std_msgs.msg import String
 
 
 class DestinationController(Node):
-    """중앙 명령을 받아 Nova Carter를 지정된 위치로 이동시키는 노드."""
+    """중앙 명령을 받아 Nova Carter를 지정된 위치로 이동시키는 노드입니다."""
 
     def __init__(self) -> None:
         super().__init__("destination_controller")
@@ -50,6 +51,7 @@ class DestinationController(Node):
         self.current_goal_handle = None
         self.is_moving = False
         self.current_destination = None
+        self.destination_queue = deque()
 
         self.get_logger().info(
             "AMR 목적지 제어 노드가 시작되었습니다."
@@ -59,7 +61,7 @@ class DestinationController(Node):
         )
 
     def publish_status(self, status: str):
-        """현재 AMR 상태를 /amr/status 토픽으로 발행한다."""
+        """현재 AMR 상태를 /amr/status 토픽으로 발행합니다."""
 
         self.current_status = status
 
@@ -83,9 +85,13 @@ class DestinationController(Node):
             return
 
         if self.is_moving:
-            self.get_logger().warning(
+            self.destination_queue.append(destination_name)
+            self.get_logger().info(
                 f"현재 {self.current_destination}로 이동 중입니다. "
-                f"{destination_name} 명령을 무시합니다."
+                f"{destination_name} 명령을 대기열에 추가합니다."
+            )
+            self.get_logger().info(
+                f"현재 목적지 대기열 : {list(self.destination_queue)}"
             )
             return
 
@@ -238,12 +244,28 @@ class DestinationController(Node):
             self.publish_status("FAILED")
 
         self.reset_navigation_state()
+        self.start_next_destination()
 
     def reset_navigation_state(self) -> None:
         self.is_moving = False
         self.current_destination = None
         self.current_goal_handle = None
-
+    
+    def start_next_destination(self) -> None:
+        """대기열에 있는 다음 목적지로 이동합니다."""
+        if not self.destination_queue:
+            return
+        next_destination = self.destination_queue.popleft()
+        self.get_logger().info(
+            f"대기열의 다음 목적지로 이동: {next_destination}"
+        )
+        x, y, yaw = self.destinations[next_destination]
+        self.send_navigation_goal(
+            destination_name=next_destination,
+            x=x,
+            y=y,
+            yaw=yaw,
+        )
 
 def main(args=None) -> None:
     rclpy.init(args=args)

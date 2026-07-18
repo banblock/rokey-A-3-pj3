@@ -1,3 +1,5 @@
+7/17
+
 설치 필요
 
 NVIDIA의 Isaac Sim ROS 워크스페이스 저장소
@@ -17,6 +19,7 @@ test_warehouse_navigation.yaml 적용해서 테스트 진행
 상태 토픽 추가 ("IDLE", "MOVING", "ARRIVED", "FAILED", "CANCELED")
 "CANCELED"은 구현 안되어있음
 이동 거리 출력 1초 -> 2초로 증가
+목적지 여러개 입력 시 목적지 큐를 이용해 순차 처리
 
 
 ------------------------------
@@ -55,3 +58,6 @@ ros2 topic pub --once /amr/destination std_msgs/msg/String "{data: 'HOME'}"
 ----------------
 
 
+navigate_to_pose 사용 goToPose() 사용하지 않은 이유 좀 더 세밀한 제어를 위해
+goToPose()는 NavigateToPose 액션을 쉽게 사용하도록 만든 편의 함수
+navigate_to_pose는 Nav2의 NavigateToPose 액션을 직접 사용하는 방식
