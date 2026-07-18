@@ -16,11 +16,11 @@ class DestinationController(Node):
     def __init__(self) -> None:
         super().__init__("destination_controller")
 
-        # 좌표는 임의 설정 상태
+        # 좌표는 임의 설정 상태!
         self.destinations: Dict[str, Tuple[float, float, float]] = {
-            "STORAGE": (5.0, 3.0, 1.57),
-            "DISCARD": (5.0, -3.0, -1.57),
-            "HOME": (0.0, 0.0, 0.0),
+            "STORAGE": (-6.421, 9.619, 3.14),
+            "DISCARD": (-7.131, -6.657, 3.14),
+            "HOME": (-6.006, -1.000, 3.142),
         }
 
         # 중앙 시스템으로부터 목적지 명령 수신
@@ -38,6 +38,15 @@ class DestinationController(Node):
             "/navigate_to_pose",
         )
 
+        self.status_publisher = self.create_publisher(
+            String,
+            "/amr/status",
+            10,
+        )
+
+        self.current_status = "IDLE"
+        self.publish_status("IDLE")
+
         self.current_goal_handle = None
         self.is_moving = False
         self.current_destination = None
@@ -47,6 +56,19 @@ class DestinationController(Node):
         )
         self.get_logger().info(
             "사용 가능한 명령: STORAGE, DISCARD, HOME"
+        )
+
+    def publish_status(self, status: str):
+        """현재 AMR 상태를 /amr/status 토픽으로 발행한다."""
+
+        self.current_status = status
+
+        msg = String()
+        msg.data = status
+        self.status_publisher.publish(msg)
+
+        self.get_logger().info(
+            f"AMR 상태 변경: {status}"
         )
 
     def destination_callback(self, msg: String) -> None:
@@ -92,6 +114,7 @@ class DestinationController(Node):
             self.get_logger().error(
                 "Nav2가 실행 중인지 확인하세요."
             )
+            self.publish_status("FAILED")
             return
 
         goal = NavigateToPose.Goal()
@@ -133,10 +156,12 @@ class DestinationController(Node):
 
         try:
             goal_handle = future.result()
+
         except Exception as error:
             self.get_logger().error(
                 f"목표 전송 중 오류 발생: {error}"
             )
+            self.publish_status("FAILED")
             self.reset_navigation_state()
             return
 
@@ -144,6 +169,7 @@ class DestinationController(Node):
             self.get_logger().error(
                 "Nav2가 이동 목표를 거절했습니다."
             )
+            self.publish_status("FAILED")
             self.reset_navigation_state()
             return
 
@@ -152,6 +178,7 @@ class DestinationController(Node):
         self.get_logger().info(
             f"{self.current_destination} 이동 목표가 승인되었습니다."
         )
+        self.publish_status("MOVING")
 
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
@@ -175,10 +202,12 @@ class DestinationController(Node):
 
         try:
             wrapped_result = future.result()
+
         except Exception as error:
             self.get_logger().error(
                 f"Nav2 결과 수신 중 오류 발생: {error}"
             )
+            self.publish_status("FAILED")
             self.reset_navigation_state()
             return
 
@@ -188,21 +217,25 @@ class DestinationController(Node):
             self.get_logger().info(
                 f"{self.current_destination} 도착 완료"
             )
+            self.publish_status("ARRIVED")
 
         elif status == GoalStatus.STATUS_CANCELED:
             self.get_logger().warning(
                 f"{self.current_destination} 이동이 취소되었습니다."
             )
+            self.publish_status("CANCELED")
 
         elif status == GoalStatus.STATUS_ABORTED:
             self.get_logger().error(
                 f"{self.current_destination} 이동에 실패했습니다."
             )
+            self.publish_status("FAILED")
 
         else:
             self.get_logger().warning(
                 f"이동 종료 상태 코드: {status}"
             )
+            self.publish_status("FAILED")
 
         self.reset_navigation_state()
 
@@ -219,8 +252,10 @@ def main(args=None) -> None:
 
     try:
         rclpy.spin(node)
+
     except KeyboardInterrupt:
         node.get_logger().info("노드를 종료합니다.")
+
     finally:
         node.destroy_node()
         rclpy.shutdown()

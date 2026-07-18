@@ -10,8 +10,16 @@ rosdep install --from-paths src --ignore-src -r -y
 
 
 carter_navigation.launch.py 파일에
-test_warehouse_navigation.yaml 적용해서 테스트 진행중
+test_warehouse_navigation.yaml 적용해서 테스트 진행
 
+
+7/18
+상태 토픽 추가 ("IDLE", "MOVING", "ARRIVED", "FAILED", "CANCELED")
+"CANCELED"은 구현 안되어있음
+이동 거리 출력 1초 -> 2초로 증가
+
+
+------------------------------
 
 
 AMR(Nova Carter) 동작 테스트 /navigate_to_pose만 사용
@@ -42,3 +50,8 @@ source ~/cobot3_ws/install/setup.bash
 ros2 topic pub --once /amr/destination std_msgs/msg/String "{data: 'STORAGE'}"
 ros2 topic pub --once /amr/destination std_msgs/msg/String "{data: 'DISCARD'}"
 ros2 topic pub --once /amr/destination std_msgs/msg/String "{data: 'HOME'}"
+
+
+----------------
+
+
