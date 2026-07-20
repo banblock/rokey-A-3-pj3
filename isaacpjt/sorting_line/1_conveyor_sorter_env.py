@@ -2,16 +2,24 @@
 from isaacsim import SimulationApp
 simulation_app = SimulationApp({"headless": False})     # 1. Application
 
+from isaacsim.core.utils.extensions import enable_extension
+enable_extension("isaacsim.ros2.bridge")
+simulation_app.update()
+
 import random
 import numpy as np
 import omni.usd
-from pxr import UsdPhysics, PhysxSchema, UsdLux, Gf
+import omni.graph.core as og
+import usdrt.Sdf
+from pxr import PhysxSchema, UsdLux, Gf
 
 from isaacsim.core.api import World
 from isaacsim.core.api.objects import DynamicCuboid, VisualCuboid
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
+
+from fms_node import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
@@ -22,8 +30,6 @@ dome_light.CreateIntensityAttr(1000.0)
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  A. 파라미터                                                   ║
 # ╚══════════════════════════════════════════════════════════════╝
-ENABLE_AMR = False  # False면 AMR 없이 컨베이어/스폰/랙 배치만 테스트
-
 # 컨베이어는 분류 없이 신발을 비전 검사 지점(=AMR 픽업 지점)까지만 옮긴다.
 # 목적지 배정/이동은 AMR + FMS가 담당 (컨베이어에는 diverter 없음).
 #
@@ -43,12 +49,12 @@ SHOE_SIZE = np.array([0.15, 0.08, 0.05])
 SHOE_SPAWN_POS = np.array([BELT_START_X + 0.3, 0.0, BELT_SURFACE_Z + SHOE_SIZE[2] / 2.0 + 0.01])
 PICKUP_POINT = np.array([BELT_END_X - 0.3, 0.0, BELT_SURFACE_Z])  # 비전 검사 완료 후 AMR이 집어가는 지점
 
-# ── AMR 흉내(가짜 이동) 파라미터 ──
-# 실제 내비게이션/그리퍼 없이, 픽업 지점에 도착한 신발을 목표 슬롯까지
-# 직선 보간으로 옮기는 것처럼 "보이게만" 만든다.
-AMR_HOME_POS = np.array([PICKUP_POINT[0], PICKUP_POINT[1], 0.0])
-AMR_DECK_HEIGHT = 0.4  # Nova Carter 상판 대략 높이 (GUI에서 보고 조정 필요)
-AMR_MOVE_FRAMES = 120  # 대략 2초 (world.step 기준)
+# ── AMR 함대 (Nova Carter x8, 실측 스펙) ──
+# 제어 로직은 여기 없음 — 외부 fleet_driver.py가 /<robot_id>/cmd_vel 로 조종하고,
+# 이 스크립트는 ROS2 디퍼렌셜 드라이브 브리지만 각 로봇에 붙여둔다.
+WHEEL_RADIUS_M = 0.14
+WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
+WHEEL_JOINT_NAMES = ["joint_wheel_left", "joint_wheel_right"]
 
 # ── 종류별 랙 + 크기별 슬롯 ──
 # 신발 종류(A/B/C/D) 하나당 랙 하나, 그 랙 안에서 크기(소/중/대)에 따라 다른 높이에 배치.
@@ -142,11 +148,72 @@ world.scene.add(pickup_marker)
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  C. AMR (Nova Carter, 가짜 이동)                                  ║
+# ║  C. AMR 함대 (Nova Carter x8) — 순수 물리 + ROS2 브리지               ║
 # ╚══════════════════════════════════════════════════════════════╝
-# world.scene에 등록하지 않고 순수 Xform 참조로만 둔다 — 물리 시뮬레이션은 안 받고
-# 코드에서 매 프레임 set_world_pose로 위치만 직접 옮겨서 "이동하는 것처럼" 보이게 한다.
-amr = spawn_asset(NOVA_CARTER_USD, "/World/AMR", position=AMR_HOME_POS) if ENABLE_AMR else None
+# fms_node.py가 정해준 로봇별 홈 슬롯(WAIT_1~8) 위치에 스폰하고, 로봇마다
+# 독립된 ROS2 디퍼렌셜 드라이브 그래프를 붙인다. 이동 제어는 전부 외부
+# fleet_driver.py가 /<robot_id>/cmd_vel 로 담당 — 이 스크립트는 물리 세계만 제공.
+#
+# 주의: 그래프 노드 구성(Twist 벡터 분해, ROS2PublishOdometry 속성명)은 Isaac Sim
+# 표준 디퍼렌셜 드라이브 샘플 패턴을 따랐지만 엔진 없이 작성한 부분이 있어
+# 처음 실행 시 노드/속성 이름을 확인해야 할 수 있다.
+
+
+def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
+    graph_path = f"/World/{robot_id}/ROS_DiffDrive"
+    keys = og.Controller.Keys
+
+    (graph, _, _, _) = og.Controller.edit(
+        {"graph_path": graph_path, "evaluator_name": "execution"},
+        {
+            keys.CREATE_NODES: [
+                ("OnTick", "omni.graph.action.OnPlaybackTick"),
+                ("SubscribeTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
+                ("BreakLinear", "omni.graph.nodes.BreakVector3"),
+                ("BreakAngular", "omni.graph.nodes.BreakVector3"),
+                ("DiffController", "isaacsim.robot.wheeled_robots.DifferentialController"),
+                ("ArticulationController", "isaacsim.core.nodes.IsaacArticulationController"),
+                ("ComputeOdometry", "isaacsim.core.nodes.IsaacComputeOdometry"),
+                ("PublishOdometry", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
+            ],
+            keys.CONNECT: [
+                ("OnTick.outputs:tick", "SubscribeTwist.inputs:execIn"),
+                ("SubscribeTwist.outputs:linearVelocity", "BreakLinear.inputs:tuple"),
+                ("SubscribeTwist.outputs:angularVelocity", "BreakAngular.inputs:tuple"),
+                ("SubscribeTwist.outputs:execOut", "DiffController.inputs:execIn"),
+                ("BreakLinear.outputs:x", "DiffController.inputs:linearVelocity"),
+                ("BreakAngular.outputs:z", "DiffController.inputs:angularVelocity"),
+                ("DiffController.outputs:execOut", "ArticulationController.inputs:execIn"),
+                ("DiffController.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
+                ("OnTick.outputs:tick", "ComputeOdometry.inputs:execIn"),
+                ("ComputeOdometry.outputs:execOut", "PublishOdometry.inputs:execIn"),
+                ("ComputeOdometry.outputs:angularVelocity", "PublishOdometry.inputs:angularVelocity"),
+                ("ComputeOdometry.outputs:linearVelocity", "PublishOdometry.inputs:linearVelocity"),
+                ("ComputeOdometry.outputs:orientation", "PublishOdometry.inputs:orientation"),
+                ("ComputeOdometry.outputs:position", "PublishOdometry.inputs:position"),
+            ],
+            keys.SET_VALUES: [
+                ("SubscribeTwist.inputs:topicName", f"/{robot_id}/cmd_vel"),
+                ("DiffController.inputs:wheelRadius", WHEEL_RADIUS_M),
+                ("DiffController.inputs:wheelDistance", WHEEL_BASE_M),
+                ("ArticulationController.inputs:targetPrim", [usdrt.Sdf.Path(chassis_prim_path)]),
+                ("ArticulationController.inputs:jointNames", WHEEL_JOINT_NAMES),
+                ("ComputeOdometry.inputs:chassisPrim", [usdrt.Sdf.Path(chassis_prim_path)]),
+                ("PublishOdometry.inputs:topicName", f"/{robot_id}/odom"),
+                ("PublishOdometry.inputs:odomFrameId", f"{robot_id}/odom"),
+                ("PublishOdometry.inputs:chassisFrameId", f"{robot_id}/base_link"),
+            ],
+        },
+    )
+    return graph
+
+
+for _robot_id, _home_node in ROBOT_HOME_NODE.items():
+    _home_pos = list(NODE_GRAPH[_home_node]["position"])
+    _prim_path = f"/World/{_robot_id}"
+    spawn_asset(NOVA_CARTER_USD, _prim_path, position=_home_pos)
+    build_ros2_diffdrive_graph(_robot_id, chassis_prim_path=f"{_prim_path}/chassis_link")
+    print(f"[스폰] {_robot_id} (담당 종류={ROBOT_SHOE_TYPE[_robot_id]}) @ {_home_node} {_home_pos}")
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -192,15 +259,10 @@ spawn_shoe()
 frame = 0
 was_playing = False
 
-# AMR 상태 머신: idle(대기) → carry(슬롯으로 이동) → return(픽업지점 복귀)
-amr_state = "idle"
-amr_carry_shoe = None
-amr_target_slot = None
-amr_move_frame = 0
-
 print("\n" + "=" * 60)
-print(f"[환경] 컨베이어 벨트 + AMR(가짜 이동) + 종류별 랙 {len(SHOE_TYPES)}개(각 {len(SHOE_SIZES)}슬롯) "
-      f"+ 폐기/임시저장소 생성 완료")
+print(f"[환경] 컨베이어 벨트 + Nova Carter {len(ROBOT_HOME_NODE)}대(ROS2 브리지) + "
+      f"종류별 랙 {len(SHOE_TYPES)}개(각 {len(SHOE_SIZES)}슬롯) + 폐기/임시저장소 생성 완료")
+print("  AMR 제어: 외부 fleet_driver.py가 /<robot_id>/cmd_vel 로 담당")
 print("=" * 60)
 
 while simulation_app.is_running():
@@ -218,46 +280,10 @@ while simulation_app.is_running():
         if frame % 300 == 0:
             spawn_shoe()
 
-        # ── AMR 상태 머신 (ENABLE_AMR=False면 건너뜀 — 신발은 픽업 지점에 쌓이기만 함) ──
-        if not ENABLE_AMR:
-            pass
-        elif amr_state == "idle":
-            # 픽업 지점까지 도달한(=벨트로 다 이동한) 신발이 있으면 집어든다
-            if pending_shoes:
-                shoe_entry = pending_shoes[0]
-                shoe_pos, _ = shoe_entry["obj"].get_world_pose()
-                if shoe_pos[0] >= PICKUP_POINT[0]:
-                    pending_shoes.pop(0)
-                    amr_carry_shoe = shoe_entry["obj"]
-                    amr_target_slot = get_target_slot(shoe_entry["type"], shoe_entry["size"])
-                    UsdPhysics.RigidBodyAPI(amr_carry_shoe.prim).CreateKinematicEnabledAttr(True)
-                    amr_state = "carry"
-                    amr_move_frame = 0
-                    print(f"[AMR] 신발 확보 (종류={shoe_entry['type']}, 크기={shoe_entry['size']}) "
-                          f"→ 랙 {shoe_entry['type']} 슬롯으로 이동")
-
-        elif amr_state == "carry":
-            amr_move_frame += 1
-            alpha = min(1.0, amr_move_frame / AMR_MOVE_FRAMES)
-            pos = (1.0 - alpha) * AMR_HOME_POS + alpha * amr_target_slot
-            amr.set_world_pose(position=pos)
-            amr_carry_shoe.set_world_pose(
-                position=pos + np.array([0.0, 0.0, AMR_DECK_HEIGHT + SHOE_SIZE[2] / 2.0])
-            )
-            if alpha >= 1.0:
-                print("[AMR] 슬롯에 신발 배치 완료 → 복귀")
-                amr_carry_shoe = None
-                amr_state = "return"
-                amr_move_frame = 0
-
-        elif amr_state == "return":
-            amr_move_frame += 1
-            alpha = min(1.0, amr_move_frame / AMR_MOVE_FRAMES)
-            pos = (1.0 - alpha) * amr_target_slot + alpha * AMR_HOME_POS
-            amr.set_world_pose(position=pos)
-            if alpha >= 1.0:
-                print("[AMR] 픽업 지점 복귀, 대기")
-                amr_state = "idle"
+        # pending_shoes는 픽업 지점 도달을 기다리는 FIFO 큐로 계속 쌓인다.
+        # 실제로 이 신발을 로봇에 옮기는 로직(비전 srv 분류 + /fms/pickup_ready
+        # 수신 후 프림을 로봇에 붙였다 랙에 내려놓는 처리)은 아직 이 스크립트에
+        # 없다 — 다음 단계에서 이어서 구현.
 
     was_playing = is_playing
 
