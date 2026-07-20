@@ -1,0 +1,6 @@
+# FMS가 /vision/shoe_ready 신호를 받은 뒤 호출해서 최근 분류된 신발 배치를 가져오는 서비스.
+# 요청은 필드 없음 — "지금 분류 결과 줘" 라는 의미의 트리거 호출.
+---
+bool success                 # 응답 시점에 분류된 배치가 없으면 false (shoe_type/shoe_length_mm는 무시)
+int32 shoe_type              # 0=A, 1=B, 2=C, 3=D
+int32[5] shoe_length_mm      # 이번 배치 신발 5켤레 각각의 길이(mm)
