@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'sorting_line_fms'
@@ -14,6 +17,7 @@ setup(
         # 없음, Isaac Sim 스크립트도 그대로 가져다 씀) — 패키지 안으로 옮기지 않고
         # share/에 설치해서 ament_index로 찾아 쓴다(설치 방식과 무관하게 항상 동작).
         ('share/' + package_name, ['../../isaacpjt/sorting_line/fleet_config.py']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
