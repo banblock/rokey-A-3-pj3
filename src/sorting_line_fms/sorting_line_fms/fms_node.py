@@ -12,18 +12,18 @@
 """
 
 import json
-import os
 import sys
 
 # fleet_config.py는 이 ROS 패키지 밖(isaacpjt/sorting_line/)에 있는 순수 데이터
 # 모듈이다 — Isaac Sim 스크립트도 rclpy 없이 그대로 가져다 쓰므로 일부러 패키지
-# 안으로 옮기지 않았다. colcon build --symlink-install로 설치했다는 전제 하에,
-# 이 파일의 실제 경로(src/sorting_line_fms/sorting_line_fms/fms_node.py)에서
-# 3단계 위로 올라가면 워크스페이스 루트가 나온다 — 어느 경로에 클론해도 동작한다.
-_WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".."))
-_SORTING_LINE_DIR = os.path.join(_WORKSPACE_ROOT, "isaacpjt", "sorting_line")
-if _SORTING_LINE_DIR not in sys.path:
-    sys.path.insert(0, _SORTING_LINE_DIR)
+# 안으로 옮기지 않았다. setup.py의 data_files로 share/sorting_line_fms/ 밑에
+# 같이 설치해두고, ament_index로 그 경로를 찾는다 — __file__ 기준 상대경로
+# 계산과 달리 --symlink-install 여부와 무관하게 항상 정확하게 동작한다.
+from ament_index_python.packages import get_package_share_directory
+
+_SHARE_DIR = get_package_share_directory("sorting_line_fms")
+if _SHARE_DIR not in sys.path:
+    sys.path.insert(0, _SHARE_DIR)
 
 import rclpy
 from rclpy.node import Node

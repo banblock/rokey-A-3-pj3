@@ -10,6 +10,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        # fleet_config.py는 isaacpjt/sorting_line/에 있는 순수 데이터 모듈(rclpy 의존
+        # 없음, Isaac Sim 스크립트도 그대로 가져다 씀) — 패키지 안으로 옮기지 않고
+        # share/에 설치해서 ament_index로 찾아 쓴다(설치 방식과 무관하게 항상 동작).
+        ('share/' + package_name, ['../../isaacpjt/sorting_line/fleet_config.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
