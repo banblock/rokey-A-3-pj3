@@ -17,7 +17,7 @@ from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.storage.native import get_assets_root_path
 
-from fms_node import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  AMR 함대(Nova Carter x8) — 3단 구조의 3번째 계층: 순수 물리 세계        ║
@@ -96,7 +96,8 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
                 ("SubscribeTwist.outputs:execOut", "DiffController.inputs:execIn"),
                 ("BreakLinear.outputs:x", "DiffController.inputs:linearVelocity"),
                 ("BreakAngular.outputs:z", "DiffController.inputs:angularVelocity"),
-                ("DiffController.outputs:execOut", "ArticulationController.inputs:execIn"),
+                # DifferentialController는 순수 계산 노드라 outputs:execOut이 없음 — 실행 검증됨.
+                ("SubscribeTwist.outputs:execOut", "ArticulationController.inputs:execIn"),
                 ("DiffController.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
                 ("OnTick.outputs:tick", "ComputeOdometry.inputs:execIn"),
                 ("ComputeOdometry.outputs:execOut", "PublishOdometry.inputs:execIn"),

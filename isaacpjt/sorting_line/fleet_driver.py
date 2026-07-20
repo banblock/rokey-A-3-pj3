@@ -30,7 +30,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-from fms_node import ROBOT_HOME_NODE
+from fleet_config import ROBOT_HOME_NODE
 
 ARRIVE_RADIUS_M = 0.15
 ANGLE_TOLERANCE_RAD = 0.25   # 이 안이면 회전 없이 바로 직진

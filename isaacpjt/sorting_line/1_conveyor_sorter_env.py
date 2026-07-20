@@ -19,7 +19,7 @@ from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
 
-from fms_node import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
@@ -183,7 +183,10 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
                 ("SubscribeTwist.outputs:execOut", "DiffController.inputs:execIn"),
                 ("BreakLinear.outputs:x", "DiffController.inputs:linearVelocity"),
                 ("BreakAngular.outputs:z", "DiffController.inputs:angularVelocity"),
-                ("DiffController.outputs:execOut", "ArticulationController.inputs:execIn"),
+                # DifferentialController는 순수 계산 노드라 outputs:execOut이 없음 — 실행 검증됨.
+                # ArticulationController의 트리거는 SubscribeTwist에서 바로 받는다
+                # (DiffController의 데이터 출력은 같은 틱 안에서 데이터 의존성으로 먼저 계산됨).
+                ("SubscribeTwist.outputs:execOut", "ArticulationController.inputs:execIn"),
                 ("DiffController.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
                 ("OnTick.outputs:tick", "ComputeOdometry.inputs:execIn"),
                 ("ComputeOdometry.outputs:execOut", "PublishOdometry.inputs:execIn"),
