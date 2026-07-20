@@ -23,6 +23,17 @@ Z는 무시한다(신발을 몇 번째 선반에 놓을지는 이 노드가 관�
 
 import json
 import math
+import os
+import sys
+
+# fleet_config.py는 이 ROS 패키지 밖(isaacpjt/sorting_line/)에 있는 순수 데이터
+# 모듈이다 — fms_node.py와 동일한 이유로 패키지 안으로 옮기지 않았다 (Isaac Sim
+# 스크립트도 rclpy 없이 그대로 가져다 쓴다). colcon build --symlink-install로
+# 설치했다는 전제 하에, 이 파일 경로에서 3단계 위가 워크스페이스 루트다.
+_WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".."))
+_SORTING_LINE_DIR = os.path.join(_WORKSPACE_ROOT, "isaacpjt", "sorting_line")
+if _SORTING_LINE_DIR not in sys.path:
+    sys.path.insert(0, _SORTING_LINE_DIR)
 
 import rclpy
 from rclpy.node import Node
@@ -30,7 +41,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-from fleet_config import ROBOT_HOME_NODE
+from fleet_config import ROBOT_HOME_NODE  # noqa: E402
 
 ARRIVE_RADIUS_M = 0.15
 ANGLE_TOLERANCE_RAD = 0.25   # 이 안이면 회전 없이 바로 직진

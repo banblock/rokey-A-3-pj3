@@ -79,10 +79,19 @@ NODE_GRAPH = {
 }
 
 # 로봇 수만큼 전용 대기 슬롯을 생성해 그래프에 붙인다 (PICKUP 앞에 나란히 배치).
-_WAIT_BASE_X, _WAIT_BASE_Y, _WAIT_BASE_Z = 1.7, -1.0, 0.0
+# 간격은 Nova Carter 실측 트랙폭(0.4132m)보다 충분히 여유 있게 잡는다 — 차체(캐스터
+# 포함)는 트랙폭보다 더 커서, 너무 좁게 스폰하면 스폰 직후 서로 겹쳐 PhysX가
+# 충돌로 인식하고 강하게 밀어내면서 로봇이 튕겨나가는 문제가 생긴다.
+#
+# PICKUP과의 거리(_WAIT_BASE_Y)는 일부러 멀리 뒀다 — 랙/컨베이어 노드들은 실제
+# 스폰된 USD 에셋 위치와 맞춰져 있어서 함부로 못 늘리지만, WAIT 슬롯은 어떤
+# 실물 에셋과도 안 묶인 빈 공간이라 여기를 멀리 떨어뜨리면 매 태스크마다
+# 왕복 구간이 길어져서 실제 이동을 눈으로 관측하기 훨씬 쉬워진다.
+_WAIT_SPACING_M = 1.0
+_WAIT_BASE_X, _WAIT_BASE_Y, _WAIT_BASE_Z = 1.7, -6.0, 0.0
 for _i, _wait_node in enumerate(WAIT_NODE_IDS):
     NODE_GRAPH[_wait_node] = {
-        "position": (_WAIT_BASE_X - _i * 0.5, _WAIT_BASE_Y, _WAIT_BASE_Z),
+        "position": (_WAIT_BASE_X - _i * _WAIT_SPACING_M, _WAIT_BASE_Y, _WAIT_BASE_Z),
         "neighbors": ["PICKUP"],
     }
 

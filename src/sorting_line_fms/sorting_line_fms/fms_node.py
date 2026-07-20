@@ -12,14 +12,25 @@
 """
 
 import json
+import os
+import sys
+
+# fleet_config.py는 이 ROS 패키지 밖(isaacpjt/sorting_line/)에 있는 순수 데이터
+# 모듈이다 — Isaac Sim 스크립트도 rclpy 없이 그대로 가져다 쓰므로 일부러 패키지
+# 안으로 옮기지 않았다. colcon build --symlink-install로 설치했다는 전제 하에,
+# 이 파일의 실제 경로(src/sorting_line_fms/sorting_line_fms/fms_node.py)에서
+# 3단계 위로 올라가면 워크스페이스 루트가 나온다 — 어느 경로에 클론해도 동작한다.
+_WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".."))
+_SORTING_LINE_DIR = os.path.join(_WORKSPACE_ROOT, "isaacpjt", "sorting_line")
+if _SORTING_LINE_DIR not in sys.path:
+    sys.path.insert(0, _SORTING_LINE_DIR)
 
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty, String
+from std_srvs.srv import Trigger
 
-from m0609_interfaces.srv import ClassifyShoes
-
-from fleet_config import (
+from fleet_config import (  # noqa: E402
     NODE_GRAPH,
     ROBOT_HOME_NODE,
     ROBOT_SHOE_TYPE,
@@ -71,7 +82,11 @@ class FleetManagementSystem(Node):
 
         # 비전 쪽에서 "신발 5켤레 배치 분류 끝났다" 신호(트리거)를 주면,
         # 그 순간 실제 분류 결과(종류 1개 + 길이 5개)를 srv로 가져온다.
-        self.classify_client = self.create_client(ClassifyShoes, "/vision/classify_shoes")
+        # 커스텀 srv 대신 표준 std_srvs/Trigger를 쓰고, 실제 데이터(종류/길이)는
+        # 응답의 message 필드에 JSON으로 실어보낸다 — 이러면 이 서비스를 쓰는
+        # 어떤 프로세스도(Isaac Sim 내장 파이썬 포함) 커스텀 인터페이스 빌드가
+        # 필요 없다(다른 토픽들과 동일한 패턴).
+        self.classify_client = self.create_client(Trigger, "/vision/classify_shoes")
         self.create_subscription(Empty, "/vision/shoe_ready", self._on_shoe_ready, 10)
 
         self.create_timer(0.5, self._dispatch_tick)
@@ -115,7 +130,7 @@ class FleetManagementSystem(Node):
         if not self.classify_client.service_is_ready():
             self.get_logger().warn("분류 서비스(/vision/classify_shoes)가 아직 준비되지 않아 요청을 건너뜀")
             return
-        future = self.classify_client.call_async(ClassifyShoes.Request())
+        future = self.classify_client.call_async(Trigger.Request())
         future.add_done_callback(self._on_classify_response)
 
     def _on_classify_response(self, future):
@@ -126,15 +141,23 @@ class FleetManagementSystem(Node):
             return
 
         if not response.success:
-            self.get_logger().warn("분류 서비스 응답: 새 배치 없음(success=False)")
+            self.get_logger().warn(f"분류 서비스 응답: 새 배치 없음(success=False) — {response.message}")
             return
 
-        if not (0 <= response.shoe_type < len(SHOE_TYPES)):
-            self.get_logger().error(f"알 수 없는 shoe_type 인덱스: {response.shoe_type}")
+        try:
+            payload = json.loads(response.message)
+            shoe_type_idx = payload["shoe_type"]
+            shoe_length_mm = payload["shoe_length_mm"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            self.get_logger().error(f"분류 서비스 응답 파싱 실패: {exc} (message={response.message!r})")
             return
-        shoe_type = SHOE_TYPES[response.shoe_type]
 
-        for length_mm in response.shoe_length_mm:
+        if not (0 <= shoe_type_idx < len(SHOE_TYPES)):
+            self.get_logger().error(f"알 수 없는 shoe_type 인덱스: {shoe_type_idx}")
+            return
+        shoe_type = SHOE_TYPES[shoe_type_idx]
+
+        for length_mm in shoe_length_mm:
             shoe_size = _bucket_size(length_mm)
             target_node = TARGET_SLOT_NODE[(shoe_type, shoe_size)]
             self._next_shoe_id += 1

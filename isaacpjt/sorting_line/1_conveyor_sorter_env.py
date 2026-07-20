@@ -175,6 +175,7 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
                 ("ArticulationController", "isaacsim.core.nodes.IsaacArticulationController"),
                 ("ComputeOdometry", "isaacsim.core.nodes.IsaacComputeOdometry"),
                 ("PublishOdometry", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
+                ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
             ],
             keys.CONNECT: [
                 ("OnTick.outputs:tick", "SubscribeTwist.inputs:execIn"),
@@ -194,6 +195,7 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
                 ("ComputeOdometry.outputs:linearVelocity", "PublishOdometry.inputs:linearVelocity"),
                 ("ComputeOdometry.outputs:orientation", "PublishOdometry.inputs:orientation"),
                 ("ComputeOdometry.outputs:position", "PublishOdometry.inputs:position"),
+                ("ReadSimTime.outputs:simulationTime", "PublishOdometry.inputs:timeStamp"),
             ],
             keys.SET_VALUES: [
                 ("SubscribeTwist.inputs:topicName", f"/{robot_id}/cmd_vel"),
