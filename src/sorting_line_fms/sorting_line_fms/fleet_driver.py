@@ -156,8 +156,15 @@ class FleetDriver(Node):
             twist = Twist()
             if abs(heading_error) > ANGLE_TOLERANCE_RAD:
                 twist.linear.x = 0.0  # 큰 각도 오차는 제자리 회전으로 먼저 정렬
-            else:
+            elif robot["target_is_final"]:
                 twist.linear.x = min(K_LINEAR * distance, MAX_LINEAR_MPS)
+            else:
+                # 중간 경유지(본선 세분화 칸)는 정확히 멈출 필요가 없다 — distance
+                # 비례로 감속하면 진짜 목적지가 아닌데도 각 칸 경계마다 속도가
+                # 0 가까이 떨어져서(is_final_hop로 완전 정지는 막았어도) 여전히
+                # "잠깐 멈칫"하는 것처럼 보였다. 도착 반경 진입 전까지는 최고
+                # 속도를 그대로 유지해 칸 경계를 매끄럽게 통과한다.
+                twist.linear.x = MAX_LINEAR_MPS
             twist.angular.z = max(-MAX_ANGULAR_RPS, min(MAX_ANGULAR_RPS, K_ANGULAR * heading_error))
             robot["cmd_pub"].publish(twist)
 

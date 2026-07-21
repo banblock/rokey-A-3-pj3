@@ -244,6 +244,10 @@ class FleetManagementSystem(Node):
                         self._report_amr_state(robot_id, 0, f"{arrived_node} 배치 완료")
             else:
                 robot["state"] = "waiting_next_hop"
+                # 다음 tick(최대 0.5초 뒤)까지 안 기다리고 도착한 즉시 다음 홉을
+                # 시도한다 — 중간 경유지에서 로봇이 잠깐 멈칫하던 것의 상당 부분이
+                # 실제로는 "도착 → 다음 명령까지의 대기 시간(tick 주기)"였다.
+                self._try_advance_hop(robot_id, now)
 
     def _dispatch_tick(self):
         now = self.get_clock().now()
@@ -353,40 +357,49 @@ class FleetManagementSystem(Node):
             ordered_ids = []
 
         for robot_id in ordered_ids:
-            robot = self.robots[robot_id]
-            if robot["state"] != "waiting_next_hop":
-                continue
+            self._try_advance_hop(robot_id, now)
 
-            next_idx = robot["path_idx"] + 1
-            if next_idx >= len(robot["path"]):
-                continue
+    def _try_advance_hop(self, robot_id, now):
+        """robot_id를 한 홉 전진시킨다 — 다음 노드가 비어있고 구간 충돌 위험도
+        없으면 점유 후 이동 명령을 보낸다. 주기 tick(_dispatch_tick)과, 로봇이
+        막 도착해 다음 목표가 필요해진 순간(반응형, _on_robot_status) 양쪽에서
+        호출된다 — 도착 즉시 시도해야 "다음 tick까지 대기(최대 0.5초)"로 인한
+        중간 경유지에서의 순간 정지를 없앨 수 있다.
+        """
+        robot = self.robots[robot_id]
+        if robot["state"] != "waiting_next_hop":
+            return
 
-            next_node = robot["path"][next_idx]
-            holder_id = self.node_locks[next_node]
+        next_idx = robot["path_idx"] + 1
+        if next_idx >= len(robot["path"]):
+            return
 
-            if holder_id is not None:
-                # 다른 로봇이 다음 노드를 점유 중이라 못 넘어감 — 얼마나 오래 막혀있는지
-                # 추적하다가 DEADLOCK_ALERT_SEC를 넘기면 한 번만 알림을 보낸다.
-                self._track_deadlock_alert(robot_id, next_node, holder_id, now, reason="node_lock")
-                continue
+        next_node = robot["path"][next_idx]
+        holder_id = self.node_locks[next_node]
 
-            # 다음 노드는 비어있어도, 거기까지 가는 구간(edge) 자체가 지금 이동 중인
-            # 다른 로봇의 구간과 기하학적으로 교차할 수 있다 — 노드 락은 점만 보호하고
-            # 구간은 안 보호하기 때문. 교차 위험이 있으면 이번 tick은 보류하고 다음
-            # tick에 다시 시도한다(그동안 상대가 지나가면 저절로 풀린다).
-            conflicting_id = self._find_edge_conflict(robot_id, robot["current_node"], next_node)
-            if conflicting_id is not None:
-                self._track_deadlock_alert(robot_id, next_node, conflicting_id, now, reason="edge_conflict")
-                continue
+        if holder_id is not None:
+            # 다른 로봇이 다음 노드를 점유 중이라 못 넘어감 — 얼마나 오래 막혀있는지
+            # 추적하다가 DEADLOCK_ALERT_SEC를 넘기면 한 번만 알림을 보낸다.
+            self._track_deadlock_alert(robot_id, next_node, holder_id, now, reason="node_lock")
+            return
 
-            # 다음 노드가 비어있고 구간 충돌 위험도 없으면 점유 후 이동 명령 전송!
-            self.node_locks[next_node] = robot_id  # 락 걸기
-            robot["state"] = "moving"
-            robot["move_started_at"] = now
-            robot["move_target"] = next_node
-            is_final_hop = next_idx == len(robot["path"]) - 1
-            self._send_move_command(robot_id, next_node, is_final_hop)
-            self._clear_deadlock_alert(robot_id, now)
+        # 다음 노드는 비어있어도, 거기까지 가는 구간(edge) 자체가 지금 이동 중인
+        # 다른 로봇의 구간과 기하학적으로 교차할 수 있다 — 노드 락은 점만 보호하고
+        # 구간은 안 보호하기 때문. 교차 위험이 있으면 이번 시도는 보류하고 다음
+        # tick에 다시 시도한다(그동안 상대가 지나가면 저절로 풀린다).
+        conflicting_id = self._find_edge_conflict(robot_id, robot["current_node"], next_node)
+        if conflicting_id is not None:
+            self._track_deadlock_alert(robot_id, next_node, conflicting_id, now, reason="edge_conflict")
+            return
+
+        # 다음 노드가 비어있고 구간 충돌 위험도 없으면 점유 후 이동 명령 전송!
+        self.node_locks[next_node] = robot_id  # 락 걸기
+        robot["state"] = "moving"
+        robot["move_started_at"] = now
+        robot["move_target"] = next_node
+        is_final_hop = next_idx == len(robot["path"]) - 1
+        self._send_move_command(robot_id, next_node, is_final_hop)
+        self._clear_deadlock_alert(robot_id, now)
 
     def _pick_rack_target(self, canonical_target):
         """canonical_target(예: RackA_소)에 대해 근접/우회 중 실제로 쓸 노드를 고른다.
