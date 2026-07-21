@@ -1,3 +1,5 @@
 # FMS → 메인 컨트롤 노드: 배치 작업 완료 또는 교착 상태 발생 알림.
-string state
+int32 amr_id #실제 amr id
+int32 code # 0 : 완료, 1 : 교착(로봇), 2 : 교착(위치)
+string state # 문제 상황
 ---

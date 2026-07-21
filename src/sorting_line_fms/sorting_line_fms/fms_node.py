@@ -50,16 +50,13 @@ MOVE_TIMEOUT_SEC = 60.0  # 이동 명령 후 이만큼 지나도 arrived가 없�
 # 길어져서, 정상 이동 중인데도 15초 만에 워치독이 "멈췄다"고 오판해 락을
 # 강제로 풀고 재전송하는 문제가 있었다. 최악 이동 시간(약 37초)에 회전 시간
 # 등 여유를 더해 60초로 재보정.
-DEADLOCK_ALERT_SEC = 5.0  # 다른 로봇이 다음 노드를 점유해 이만큼 계속 못 넘어가면 교착으로 보고
+DEADLOCK_ALERT_SEC = 5.0  # 다른 로봇이 다음 노드를 점유해 이만큼 계속 못 넘어가면 일단 "감지"로 보고
+DEADLOCK_UNRECOVERED_SEC = 25.0  # 감지 이후에도 이만큼 더 못 풀리면 "복구 실패"로 보고 위치별 카운트를 올림
+DEADLOCK_NOTIFY_THRESHOLD = 3  # 같은 위치(node) 또는 같은 로봇에서 "복구 실패"가 이 횟수 이상 반복돼야 메인 컨트롤 노드에 알림
 SHOE_PLACEMENT_DWELL_SEC = 3.0  # 랙 목표 지점 도착 후 신발을 내려놓는 가상 대기시간(임시값, 조절 가능)
 
-# 메인 컨트롤 노드와 맞춰야 하는 서비스 이름 — 실제 이름이 다르면 여기만 바꾸면 된다.
-SHOES_LIST_SERVICE_NAME = "/fms/shoes_list"
-AMR_STATE_SERVICE_NAME = "/main_control/amr_state"
-
-# AmrState.srv의 state 문자열 값 — 실제 메인 컨트롤 노드가 기대하는 값으로 조정 가능.
-AMR_STATE_COMPLETE = "완료"
-AMR_STATE_DEADLOCK = "교착"
+# AmrState.srv의 code 값: 0 = 완료, 1 = 교착(같은 로봇이 반복, DEADLOCK_NOTIFY_THRESHOLD회 이상),
+# 2 = 교착(같은 위치가 반복, DEADLOCK_NOTIFY_THRESHOLD회 이상) — 둘 다 해당하면 각각 따로 보고된다.
 
 # 신발 길이(mm) → 크기 등급 경계값. 실측 후 조정 예정(현재는 자리표시용 플레이스홀더).
 SIZE_THRESHOLDS_MM = (255, 275)  # length < 255 → 소 | 255 ~ 275 → 중 | length > 275 → 대
@@ -104,6 +101,11 @@ class FleetManagementSystem(Node):
         self._rr_offset = 0  # 다음 홉 배정 시 순회 시작점을 매 tick 회전(기아 방지)
         self._next_shoe_id = 0
         self._blocked_since = {}  # robot_id -> {"since","next_node","holder","reported"} — 동선 겹침 추적
+        # "복구 실패" 확정 횟수를 위치 기준/로봇 기준으로 각각 따로 누적한다 — 같은
+        # 자리가 반복 병목인지(코드 2), 특정 로봇이 반복적으로 걸리는지(코드 1)를
+        # 구분해서 메인 컨트롤 노드에 알리기 위함.
+        self._deadlock_count_by_node = {}  # node_id -> 그 위치 누적 "복구 실패" 횟수
+        self._deadlock_count_by_robot = {}  # robot_id -> 그 로봇의 누적 "복구 실패" 횟수
         # 종류별로 "아직 랙에 안착 안 한(대기 중+진행 중) 신발 수" — 배치가 언제
         # 완전히 끝나는지 판정하는 용도. ShoesList.srv로 배치가 들어올 때 늘고,
         # 로봇이 배치 대기(dwelling)를 마칠 때마다 하나씩 줄어든다. 0이 되는
@@ -123,9 +125,9 @@ class FleetManagementSystem(Node):
         # 예전에는 FMS가 비전 서비스를 직접 트리거·호출했지만, 이제는 메인 컨트롤
         # 노드가 비전 분류 결과를 정리해서 이 서비스로 바로 넘겨준다 — FMS는 더
         # 이상 비전 쪽과 직접 통신하지 않는다.
-        self.create_service(ShoesList, SHOES_LIST_SERVICE_NAME, self._on_shoes_list)
+        self.create_service(ShoesList, "/fms/shoes_list", self._on_shoes_list)
         # FMS → 메인 컨트롤 노드: 배치 작업 완료 / 교착 상태 발생 알림 (응답 불필요).
-        self.amr_state_client = self.create_client(AmrState, AMR_STATE_SERVICE_NAME)
+        self.amr_state_client = self.create_client(AmrState, "/main_control/amr_state")
 
         self.create_timer(0.5, self._dispatch_tick)
         self.get_logger().info(
@@ -239,7 +241,7 @@ class FleetManagementSystem(Node):
                         self.get_logger().info(
                             f"[{robot_id}] 배치 작업 완료 — {arrived_node}에서 다음 배치 대기"
                         )
-                        self._report_amr_state(AMR_STATE_COMPLETE)
+                        self._report_amr_state(robot_id, 0, f"{arrived_node} 배치 완료")
             else:
                 robot["state"] = "waiting_next_hop"
 
@@ -276,10 +278,12 @@ class FleetManagementSystem(Node):
             self._pending_batch_count[shoe_type] = max(0, self._pending_batch_count[shoe_type] - 1)
             batch_done = self._pending_batch_count[shoe_type] == 0
 
-            # 이 종류의 배치가 아직 안 끝났으면 홈 슬롯으로, 다 끝났으면 PICKUP(또는
-            # 이미 점유돼 있으면 PICKUP_WAIT)으로 복귀한다 — 다음 배치를 바로 받을 수
-            # 있게 픽업 근처에서 대기.
-            target = self._pick_pickup_target(shoe_type) if batch_done else robot["home_node"]
+            # 배치가 끝났든 안 끝났든, 복귀 목적지는 항상 PICKUP(또는 이미
+            # 점유돼 있으면 PICKUP_WAIT)이다 — 로봇이 쉴 때 가는 곳은 결국
+            # 이 둘뿐이라 별도의 "홈 슬롯" 개념 없이 그때그때 점유 상태만 보고
+            # 정한다. batch_done일 때만 도착 시 완료 보고(AMR_STATE_COMPLETE)를
+            # 하도록 표시해둔다.
+            target = self._pick_pickup_target(shoe_type)
             robot["batch_complete_target"] = target if batch_done else None
             self.get_logger().info(f"[{robot_id}] 배치 대기 종료. {target}(으)로 이동합니다.")
             return_path = shortest_path(arrived_node, target)
@@ -291,14 +295,24 @@ class FleetManagementSystem(Node):
                 self.get_logger().error(f"[{robot_id}] 복귀 경로 없음: {arrived_node} → {target}")
                 robot["state"] = "idle"
 
-        # 1) 태스크 배정 — 종류가 일치하는 idle 로봇 중, 목적지까지 더 가까운 로봇 우선
+        # 1) 태스크 배정 — 종류가 일치하는 idle 로봇 중 번호가 앞선 로봇을 우선
+        # 배정한다. 거리 비교 대신 번호 순으로 하는 이유: 같은 종류를 담당하는
+        # 로봇들이 대개 같은 허브/랙 구조를 거쳐가서 경로의 실제 목적지 도달
+        # 가능 여부는 다 똑같고, 거리 차이는 로봇 홈 슬롯을 앞뒤로 벌려둔
+        # 배치상의 부산물일 뿐 실제로 최적화할 대상이 아니다. 번호 순 방식은
+        # 코드가 단순하고, 담당 로봇 수가 2대보다 늘어나도 그대로 확장된다.
+        # 로봇 등록 순서(=self.robots 삽입 순서)는 DDS 디스커버리 타이밍에 따라
+        # 달라질 수 있어 보장이 없으므로, 후보를 로봇 번호로 명시적으로 정렬한다.
         for shoe_type, queue in self.task_queues.items():
             while queue:
-                candidates = [
-                    (robot_id, robot)
-                    for robot_id, robot in self.robots.items()
-                    if robot["state"] == "idle" and robot["shoe_type"] == shoe_type
-                ]
+                candidates = sorted(
+                    (
+                        (robot_id, robot)
+                        for robot_id, robot in self.robots.items()
+                        if robot["state"] == "idle" and robot["shoe_type"] == shoe_type
+                    ),
+                    key=lambda item: int(item[0].split("_")[1]),
+                )
                 if not candidates:
                     break
 
@@ -310,10 +324,9 @@ class FleetManagementSystem(Node):
                 best_robot_id, best_path = None, None
                 for robot_id, robot in candidates:
                     path = shortest_path(robot["current_node"], actual_target)
-                    if path is None:
-                        continue
-                    if best_path is None or len(path) < len(best_path):
+                    if path is not None:
                         best_robot_id, best_path = robot_id, path
+                        break  # 번호가 가장 앞선 idle 로봇을 그대로 채택
 
                 if best_robot_id is None:
                     self.get_logger().error(f"경로 불가: {actual_target} (담당 종류={shoe_type})")
@@ -371,7 +384,8 @@ class FleetManagementSystem(Node):
             robot["state"] = "moving"
             robot["move_started_at"] = now
             robot["move_target"] = next_node
-            self._send_move_command(robot_id, next_node)
+            is_final_hop = next_idx == len(robot["path"]) - 1
+            self._send_move_command(robot_id, next_node, is_final_hop)
             self._clear_deadlock_alert(robot_id, now)
 
     def _pick_rack_target(self, canonical_target):
@@ -398,12 +412,17 @@ class FleetManagementSystem(Node):
             return pickup_node
         return PICKUP_WAIT_NODE[shoe_type]
 
-    def _report_amr_state(self, state):
+    def _report_amr_state(self, robot_id, code, desc=""):
         if not self.amr_state_client.service_is_ready():
-            self.get_logger().warn(f"AmrState 서비스가 아직 준비되지 않아 상태 보고를 건너뜀 (state={state})")
+            self.get_logger().warn(f"AmrState 서비스가 아직 준비되지 않아 상태 보고를 건너뜀 (code={code})")
             return
         request = AmrState.Request()
-        request.state = state
+        # robot_id는 "amr_3" 같은 내부 문자열 식별자(등록 순서와 무관하게 fleet_config의
+        # ROBOT_SHOE_TYPE에 고정된 이름)라서, 메인 컨트롤 노드가 기대하는 int32 amr_id로
+        # 보내려면 뒤의 숫자만 뽑아내야 한다.
+        request.amr_id = int(robot_id.split("_")[1])
+        request.code = code
+        request.state = desc  # 사람이 읽을 문제 상황 설명(선택)
         self.amr_state_client.call_async(request)  # 응답이 없는 알림이라 콜백은 필요 없음
 
     def _find_edge_conflict(self, robot_id, from_node, to_node):
@@ -425,7 +444,7 @@ class FleetManagementSystem(Node):
                 return other_id
         return None
 
-    def _send_move_command(self, robot_id, node_id):
+    def _send_move_command(self, robot_id, node_id, is_final_hop):
         position = list(NODE_GRAPH[node_id]["position"])
         msg = String()
         msg.data = json.dumps({
@@ -433,6 +452,9 @@ class FleetManagementSystem(Node):
             "action": "move_to_node",
             "node_id": node_id,
             "position": position,
+            # 경로의 마지막 홉인지 — fleet_driver가 도착 시 완전히 정지할지,
+            # 아니면 중간 경유지라 다음 명령이 올 때까지 그대로 지나갈지 결정하는 데 씀.
+            "is_final_hop": is_final_hop,
         })
         self.command_pub.publish(msg)
 
@@ -456,7 +478,7 @@ class FleetManagementSystem(Node):
         if entry is None:
             self._blocked_since[robot_id] = {
                 "since": now, "next_node": next_node, "holder": holder_id,
-                "reason": reason, "reported": False,
+                "reason": reason, "reported": False, "unrecovered_reported": False,
             }
             return
 
@@ -464,13 +486,31 @@ class FleetManagementSystem(Node):
         entry["next_node"] = next_node
         entry["holder"] = holder_id
         entry["reason"] = reason
-        if entry["reported"]:
-            return
 
         elapsed_sec = (now - entry["since"]).nanoseconds / 1e9
-        if elapsed_sec >= DEADLOCK_ALERT_SEC:
+
+        if not entry["reported"] and elapsed_sec >= DEADLOCK_ALERT_SEC:
             entry["reported"] = True
             self._publish_deadlock_alert("raised", robot_id, next_node, holder_id, reason, elapsed_sec)
+
+        # "감지(raised)"만으로는 아직 진짜 교착인지 알 수 없다 — 잠깐 정체됐다가 곧
+        # 스스로 풀리는 경우가 대부분이라, 그보다 훨씬 긴 시간(DEADLOCK_UNRECOVERED_SEC)이
+        # 지나도록 여전히 같은 자리에서 못 벗어나야만 "복구 실패"로 확정하고, 그때
+        # 비로소 이 위치의 누적 카운트를 올린다 — 곧 풀릴 정체까지 카운트에 넣으면
+        # 실제로는 문제없는 위치도 금방 메인 컨트롤 알림 임계치를 넘겨버린다.
+        if not entry["unrecovered_reported"] and elapsed_sec >= DEADLOCK_UNRECOVERED_SEC:
+            entry["unrecovered_reported"] = True
+            # 위치 기준/로봇 기준을 각각 독립적으로 누적한다 — 같은 자리가 반복
+            # 병목인지, 특정 로봇이 반복적으로 걸리는지는 서로 다른 원인이라 따로
+            # 세고 따로 알린다.
+            node_deadlock_count = self._deadlock_count_by_node.get(next_node, 0) + 1
+            self._deadlock_count_by_node[next_node] = node_deadlock_count
+            robot_deadlock_count = self._deadlock_count_by_robot.get(robot_id, 0) + 1
+            self._deadlock_count_by_robot[robot_id] = robot_deadlock_count
+            self._publish_deadlock_alert(
+                "unrecovered", robot_id, next_node, holder_id, reason, elapsed_sec,
+                node_deadlock_count, robot_deadlock_count,
+            )
 
     def _clear_deadlock_alert(self, robot_id, now):
         entry = self._blocked_since.pop(robot_id, None)
@@ -480,15 +520,21 @@ class FleetManagementSystem(Node):
                 "cleared", robot_id, entry["next_node"], entry["holder"], entry["reason"], elapsed_sec
             )
 
-    def _publish_deadlock_alert(self, event, robot_id, next_node, holder_id, reason, elapsed_sec):
+    def _publish_deadlock_alert(
+        self, event, robot_id, next_node, holder_id, reason, elapsed_sec,
+        node_deadlock_count=None, robot_deadlock_count=None,
+    ):
         msg = String()
         msg.data = json.dumps({
-            "event": event,  # "raised" | "cleared"
+            "event": event,  # "raised"(감지) | "unrecovered"(복구 실패 확정) | "cleared"(해소)
             "robot_id": robot_id,
             "blocked_at_node": next_node,
             "blocked_by_robot": holder_id,
             "reason": reason,  # "node_lock"(다음 노드를 점유당함) | "edge_conflict"(구간 교차 위험)
             "blocked_seconds": round(elapsed_sec, 1),
+            # 아래 둘 다 "unrecovered"일 때만 값 있음 — 각각 위치 기준/로봇 기준 누적 횟수
+            "node_deadlock_count": node_deadlock_count,
+            "robot_deadlock_count": robot_deadlock_count,
         })
         self.deadlock_pub.publish(msg)
         if event == "raised":
@@ -502,7 +548,23 @@ class FleetManagementSystem(Node):
                     f"[교착 감지] {robot_id} — {next_node} 진입 대기 중, {holder_id}가 점유 "
                     f"({elapsed_sec:.1f}초째 정체)"
                 )
-            self._report_amr_state(AMR_STATE_DEADLOCK)
+        elif event == "unrecovered":
+            self.get_logger().error(
+                f"[교착 미복구] {robot_id} — {next_node}, {elapsed_sec:.1f}초째 미복구 "
+                f"(이 위치 누적 {node_deadlock_count}회 / 이 로봇 누적 {robot_deadlock_count}회)"
+            )
+            # 위치 기준(코드 2)과 로봇 기준(코드 1)을 각각 독립적으로 임계치 검사한다
+            # — 같은 자리가 반복 병목이면 위치 문제로, 특정 로봇이 반복 걸리면 로봇
+            # 문제로 메인 컨트롤이 구분할 수 있게 서로 다른 code로 알린다. 매 tick마다
+            # 알리면 노이즈가 많아 threshold 이상일 때만 보낸다.
+            if robot_deadlock_count >= DEADLOCK_NOTIFY_THRESHOLD:
+                self._report_amr_state(
+                    robot_id, 1, f"{robot_id} 반복 교착 {robot_deadlock_count}회 (최근 위치: {next_node})"
+                )
+            if node_deadlock_count >= DEADLOCK_NOTIFY_THRESHOLD:
+                self._report_amr_state(
+                    robot_id, 2, f"{next_node} 반복 교착 {node_deadlock_count}회 (로봇: {robot_id})"
+                )
         else:
             self.get_logger().info(f"[교착 해소] {robot_id} — {elapsed_sec:.1f}초 만에 재개")
 

@@ -13,12 +13,12 @@ import usdrt.Sdf
 from pxr import UsdLux
 
 from isaacsim.core.api import World
-from isaacsim.core.api.objects import VisualCuboid
+from isaacsim.core.api.objects import VisualCuboid, VisualCylinder
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
 
-from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
@@ -54,7 +54,7 @@ def spawn_asset(usd_path, prim_path, position):
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  C. AMR 함대 (Nova Carter x8) — 순수 물리 + ROS2 브리지               ║
 # ╚══════════════════════════════════════════════════════════════╝
-# fms_node.py가 정해준 로봇별 홈 슬롯(WAIT_1~8) 위치에 스폰하고, 로봇마다
+# ROBOT_HOME_NODE(각 종류의 PICKUP_X 또는 PICKUP_WAIT_X)에 스폰하고, 로봇마다
 # 독립된 ROS2 디퍼렌셜 드라이브 그래프를 붙인다. 이동 제어는 전부 외부
 # fleet_driver.py가 /<robot_id>/cmd_vel 로 담당 — 이 스크립트는 물리 세계만 제공.
 #
@@ -125,9 +125,9 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
 # 항상 안전하게 동작).
 _ROBOT_TYPE_COLORS = {
     "A": np.array([0.80, 0.20, 0.20]),  # 빨강
-    "B": np.array([0.20, 0.40, 0.80]),  # 파랑
-    "C": np.array([0.85, 0.65, 0.13]),  # 노랑
-    "D": np.array([0.20, 0.70, 0.30]),  # 초록
+    "B": np.array([0.85, 0.65, 0.13]),  # 노랑
+    "C": np.array([0.20, 0.70, 0.30]),  # 초록
+    "D": np.array([0.20, 0.40, 0.80]),  # 파랑
 }
 _BEACON_HEIGHT_OFFSET_M = 0.5
 _robot_chassis_prims = {}
@@ -159,37 +159,28 @@ for _robot_id, _home_node in ROBOT_HOME_NODE.items():
 # ║  D. 그래프 포인트 시각화 — NODE_GRAPH의 각 지점을 바닥에 색칠된      ║
 # ║     정사각형으로 표시 (물리/충돌 없음, 순수 디버그용)                ║
 # ╚══════════════════════════════════════════════════════════════╝
-# fleet_config.py를 계속 손보는 중이라, 실제로 로봇이 어디로 가는지 눈으로
-# 바로 확인할 수 있게 노드 종류별로 색을 다르게 칠한다. 세분화(_subdivide_edge)
-# 로 자동 생성된 중간 칸("__"이 이름에 들어간 노드)은 개수가 많아서 작게 그린다.
-_NODE_MARKER_COLORS = {
-    "pickup": np.array([0.12, 0.54, 0.54]),        # PICKUP_X — 청록
-    "pickup_wait": np.array([0.72, 0.55, 0.31]),   # PICKUP_WAIT_X — 황토
-    "hub": np.array([0.76, 0.47, 0.18]),           # HUB_X — 주황
-    "rack_detour": np.array([0.49, 0.36, 0.75]),   # 우회 통로 — 보라
-    "rack_near": np.array([0.23, 0.43, 0.65]),     # 근접 통로 — 파랑
-    "rack_out": np.array([0.42, 0.48, 0.36]),      # RackX_OUT — 올리브
-    "wait": np.array([0.60, 0.59, 0.54]),          # WAIT_N(홈 슬롯) — 회색
-    "segment": np.array([0.72, 0.70, 0.63]),       # 본선 세분화 칸 — 연한 회색
-}
+# 색은 노드 종류(픽업/허브/랙...)가 아니라 담당 신발 종류(A/B/C/D)로 칠한다 —
+# 로봇 비콘 색(_ROBOT_TYPE_COLORS)과 동일한 매핑을 그대로 재사용해서, "이 로봇이
+# 이 경로를 담당한다"는 게 색으로 바로 보이게 한다. 모양은 두 가지뿐: 픽업 대기
+# 위치(PICKUP_WAIT_X)만 원기둥(동그라미로 보임), 나머지는 전부 사각기둥(네모).
+# 세분화(_subdivide_edge)로 자동 생성된 중간 칸("__"이 이름에 들어간 노드)은
+# 개수가 많아서 작게 그린다.
 
 
-def _categorize_node(name):
-    if name.startswith("PICKUP_WAIT_"):
-        return "pickup_wait"
-    if name.startswith("PICKUP_") and "__" not in name:
-        return "pickup"
-    if name.startswith("HUB_"):
-        return "hub"
-    if "__" in name:
-        return "segment"
-    if name.startswith("WAIT_"):
-        return "wait"
-    if "_우회" in name and not name.endswith("_OUT"):
-        return "rack_detour"
-    if name.startswith("Rack") and name.endswith("_OUT"):
-        return "rack_out"
-    return "rack_near"
+def _node_shoe_type(name):
+    for _t in SHOE_TYPES:
+        if name.startswith(f"PICKUP_WAIT_{_t}"):
+            return _t
+    for _t in SHOE_TYPES:
+        if name.startswith(f"PICKUP_{_t}"):
+            return _t
+    for _t in SHOE_TYPES:
+        if name.startswith(f"HUB_{_t}"):
+            return _t
+    for _t in SHOE_TYPES:
+        if name.startswith(f"Rack{_t}"):
+            return _t
+    return None
 
 
 # USD 프림 경로/이름은 아스키 식별자만 허용한다 — 노드 이름에 들어간 한글
@@ -205,19 +196,31 @@ def _sanitize_prim_name(name):
 
 
 for _node_name, _node_data in NODE_GRAPH.items():
-    _category = _categorize_node(_node_name)
-    _color = _NODE_MARKER_COLORS[_category]
+    _node_type = _node_shoe_type(_node_name)
+    _color = _ROBOT_TYPE_COLORS.get(_node_type, np.array([0.6, 0.6, 0.6]))  # 못 찾으면 회색(원래 없어야 함)
+    _is_segment = "__" in _node_name
+    _is_pickup_wait = any(_node_name.startswith(f"PICKUP_WAIT_{_t}") for _t in SHOE_TYPES)
     _safe_name = _sanitize_prim_name(_node_name)
-    _size = 0.15 if _category == "segment" else 0.35
+    _size = 0.15 if _is_segment else 0.35
     _pos = list(_node_data["position"])
     _pos[2] = 0.01  # 바닥 위로 살짝 띄워서 그라운드 플레인과 Z-fighting 방지
-    marker = VisualCuboid(
-        prim_path=f"/World/GraphMarkers/{_safe_name}",
-        name=f"marker_{_safe_name}",
-        position=np.array(_pos),
-        scale=np.array([_size, _size, 0.02]),
-        color=_color,
-    )
+    if _is_pickup_wait:
+        marker = VisualCylinder(
+            prim_path=f"/World/GraphMarkers/{_safe_name}",
+            name=f"marker_{_safe_name}",
+            position=np.array(_pos),
+            radius=_size / 2.0,
+            height=0.02,
+            color=_color,
+        )
+    else:
+        marker = VisualCuboid(
+            prim_path=f"/World/GraphMarkers/{_safe_name}",
+            name=f"marker_{_safe_name}",
+            position=np.array(_pos),
+            scale=np.array([_size, _size, 0.02]),
+            color=_color,
+        )
     world.scene.add(marker)
 
 

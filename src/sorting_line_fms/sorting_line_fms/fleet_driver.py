@@ -43,7 +43,7 @@ from std_msgs.msg import String
 
 from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE  # noqa: E402
 
-ARRIVE_RADIUS_M = 0.15
+ARRIVE_RADIUS_M = 0.08  # 로봇 트랙폭(0.4132m) 대비 15cm는 너무 헐거워서 8cm로 조정
 ANGLE_TOLERANCE_RAD = 0.25   # 이 안이면 회전 없이 바로 직진
 MAX_LINEAR_MPS = 0.6
 MAX_ANGULAR_RPS = 1.2
@@ -98,7 +98,7 @@ class FleetDriver(Node):
         self.robots[robot_id] = {
             "x": 0.0, "y": 0.0, "yaw": 0.0, "has_odom": False,
             "spawn_x": spawn_x, "spawn_y": spawn_y,
-            "target_xy": None, "target_node": None,
+            "target_xy": None, "target_node": None, "target_is_final": True,
             "cmd_pub": self.create_publisher(Twist, f"/{robot_id}/cmd_vel", 10),
         }
         # default-arg로 robot_id를 바인딩 — 그냥 클로저로 캡처하면 루프 후반 값으로
@@ -123,6 +123,9 @@ class FleetDriver(Node):
         x, y, _z = data["position"]  # Z(선반 높이)는 지상 주행 목표에는 쓰지 않음
         self.robots[robot_id]["target_xy"] = (x, y)
         self.robots[robot_id]["target_node"] = data["node_id"]
+        # FMS가 계산한, 경로의 마지막 홉인지 여부 — 없으면(구버전 FMS 등) 안전하게
+        # "마지막"으로 간주해 정지시킨다.
+        self.robots[robot_id]["target_is_final"] = data.get("is_final_hop", True)
 
     def _control_tick(self):
         for robot_id, robot in self.robots.items():
@@ -136,9 +139,15 @@ class FleetDriver(Node):
 
             if distance <= ARRIVE_RADIUS_M:
                 arrived_node = robot["target_node"]
+                is_final = robot["target_is_final"]
                 robot["target_xy"] = None
                 robot["target_node"] = None
-                self._stop(robot_id)
+                # 진짜 목적지(랙 슬롯, 홈 슬롯, 픽업 등)에서만 완전히 정지한다.
+                # 본선 세분화 칸 같은 중간 경유지는 멈추지 않고 그대로 통과해야
+                # 플래투닝(꼬리 물기)이 부드럽게 이어진다 — FMS가 0.5초 안에
+                # 다음 홉 명령을 보내줄 거라고 가정한다.
+                if is_final:
+                    self._stop(robot_id)
                 self._publish_status(robot_id, "arrived", arrived_node)
                 continue
 

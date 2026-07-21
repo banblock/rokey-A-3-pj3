@@ -26,24 +26,25 @@ ROBOT_SHOE_TYPE = {
 # {"amr_1": "A", "amr_2": "A", "amr_3": "B", "amr_4": "B",
 #  "amr_5": "C", "amr_6": "C", "amr_7": "D", "amr_8": "D"}
 
-WAIT_NODE_IDS = [f"WAIT_{i + 1}" for i in range(len(ROBOT_SHOE_TYPE))]
-ROBOT_HOME_NODE = dict(zip(ROBOT_SHOE_TYPE.keys(), WAIT_NODE_IDS))
-
 # 신발 종류별 전용 픽업 지점 — 로봇은 자기 담당 종류의 픽업 지점에서만 신발을 받는다.
 PICKUP_NODE = {shoe_type: f"PICKUP_{shoe_type}" for shoe_type in SHOE_TYPES}
 # 배치를 다 끝낸 로봇이 PICKUP이 이미 점유돼 있을 때 대신 대기하는 지점(종류별 전용).
 PICKUP_WAIT_NODE = {shoe_type: f"PICKUP_WAIT_{shoe_type}" for shoe_type in SHOE_TYPES}
 
-# 신발 종류별 전용 홈 슬롯 목록 — 랙에서 나온 로봇이 다른 종류와 공유하는
-# 경유지 없이 바로 자기 종류의 홈으로 돌아갈 수 있게 한다.
-TYPE_WAIT_NODES = {
-    shoe_type: [
-        ROBOT_HOME_NODE[robot_id]
-        for robot_id in ROBOT_SHOE_TYPE
-        if ROBOT_SHOE_TYPE[robot_id] == shoe_type
-    ]
-    for shoe_type in SHOE_TYPES
-}
+# 로봇은 기본적으로 자기 종류의 PICKUP_X에 가 있다가, 이미 파트너 로봇이 거기
+# 있으면 PICKUP_WAIT_X에서 대기한다 — 그래서 별도의 "홈 슬롯(WAIT_N)" 개념 자체가
+# 필요 없다. 예전엔 WAIT_N이라는 제3의 지점을 따로 두고 관리했는데, 결국 로봇이
+# 쉴 때 가는 곳은 PICKUP_X 아니면 PICKUP_WAIT_X뿐이라 중복이었다. 로봇 0번은
+# PICKUP_X, 1번(파트너)은 PICKUP_WAIT_X를 스폰 위치 겸 초기 홈으로 그대로
+# 재사용한다 — 초기 등록 시점에만 쓰이고, 이후 복귀 목적지는 항상
+# fms_node.py의 _pick_pickup_target()이 그때그때 점유 상태를 보고 동적으로 정한다.
+ROBOT_HOME_NODE = {}
+for _i, _robot_id in enumerate(ROBOT_SHOE_TYPE):
+    _home_shoe_type = ROBOT_SHOE_TYPE[_robot_id]
+    _within_type_idx = _i % ROBOTS_PER_TYPE
+    ROBOT_HOME_NODE[_robot_id] = (
+        PICKUP_NODE[_home_shoe_type] if _within_type_idx == 0 else PICKUP_WAIT_NODE[_home_shoe_type]
+    )
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -51,12 +52,11 @@ TYPE_WAIT_NODES = {
 # ╚══════════════════════════════════════════════════════════════╝
 
 NODE_GRAPH = {
-    # 1. 픽업 지점 (신발 종류별로 분리 — 각 WAIT_N은 자기 담당 종류의 픽업
+    # 1. 픽업 지점 (신발 종류별로 분리 — 각 로봇은 자기 담당 종류의 픽업
     # 지점으로만 들어간다). 실제 컨베이어는 아직 단일 벨트/단일 픽업 지점이라
     # 아래 4곳의 좌표는 임시값이다 — 종류별 벨트/분기 배치가 실제로 정해지면
     # 실측치로 교체해야 한다. 간격을 2.0m로 둔 건 Nova Carter 스폰 충돌
-    # 전례(0.5m 확실히 충돌, 1.0m도 부족, 2.0m에서 해결됨) 때문 — WAIT_N도
-    # 이 X를 그대로 따라가므로, 여기가 좁으면 로봇 스폰 위치도 같이 좁아진다.
+    # 전례(0.5m 확실히 충돌, 1.0m도 부족, 2.0m에서 해결됨) 때문.
     "PICKUP_A":     {"position": (1.7, 0.0, 0.794), "neighbors": ["HUB_A"]},
     "PICKUP_B":     {"position": (3.7, 0.0, 0.794), "neighbors": ["HUB_B"]},
     "PICKUP_C":     {"position": (5.7, 0.0, 0.794), "neighbors": ["HUB_C"]},
@@ -68,15 +68,22 @@ NODE_GRAPH = {
     # 루프를 지나야 하는 C/D종류 로봇까지 덩달아 막히는 문제가 있었다
     # (본선-지선 미분리 문제) — 지금은 종류별로 픽업→경유지→랙→복귀까지
     # 완전히 독립된 통로를 쓴다.
-    "HUB_A":        {"position": (-3.75, 2.0, 0.0), "neighbors": ["RackA_대", "RackA_대_우회"]},
-    "HUB_B":        {"position": (-1.25, 2.0, 0.0), "neighbors": ["RackB_대", "RackB_대_우회"]},
-    "HUB_C":        {"position": (1.25, 2.0, 0.0),  "neighbors": ["RackC_대", "RackC_대_우회"]},
-    "HUB_D":        {"position": (3.75, 2.0, 0.0),  "neighbors": ["RackD_대", "RackD_대_우회"]},
+    #
+    # HUB의 Y가 랙 안쪽(대/중/소)보다 더 크다(더 "깊다") — 즉 로봇은 픽업에서
+    # 나와 랙 구역 중 가장 깊은 지점(HUB)까지 갔다가 얕은 쪽(소)으로 내려오면서
+    # 신발을 놓고, 가장 얕은 지점(OUT)에서 바로 복귀한다. 예전에는 반대였는데
+    # (HUB가 얕고 OUT이 깊음), 그러면 복귀 구간(OUT→픽업)이 랙 전체 깊이만큼
+    # 길어져서 왕복 경로끼리 겹칠 위험이 컸다. HUB→랙 진입 구간은 이미
+    # 세분화(_subdivide_edge)돼 있어 길어져도 안전하지만, 복귀 구간은 세분화가
+    # 안 돼 있어서 짧게 유지하는 쪽이 유리하다.
+    "HUB_A":        {"position": (-1.25, 4.3, 0.0), "neighbors": ["RackA_대", "RackA_대_우회"]},
+    "HUB_B":        {"position": (-3.75, 4.8, 0.0), "neighbors": ["RackB_대", "RackB_대_우회"]},
+    "HUB_C":        {"position": (13.15, 4.8, 0.0), "neighbors": ["RackC_대", "RackC_대_우회"]},
+    "HUB_D":        {"position": (10.65, 4.3, 0.0), "neighbors": ["RackD_대", "RackD_대_우회"]},
 
-    # 3. 랙 A — 컨베이어에서 가장 가까운 랙(오른쪽 앞줄). 실제 창고 배치는
-    # 컨베이어 기준 앞뒤로 두 랙씩 겹쳐있다: 오른쪽은 앞(A)/뒤(B), 왼쪽은
-    # 앞(D)/뒤(C) — 뒤쪽 랙(B, C)은 아래에서 Y를 더 뒤로 밀어 물리적으로 더
-    # 먼 거리를 표현한다.
+    # 3. 랙 A — 사용자 도면 기준 컨베이어에 더 가까운("안쪽") 랙. A/B 한 쌍
+    # 중에서는 A가 안쪽, B가 바깥쪽 — 근접/우회 통로 전체를 B 대비 X를 픽업
+    # 열 중심에 더 가깝게 둬서 표현한다.
     #
     # 근접/우회는 두 개의 완전히 분리된 통로. 신발은 항상 대→중→소 순서로
     # 내려놓는다(사용자 지정). 두 통로가 같은 노드를 반대 방향으로 공유하면
@@ -85,89 +92,94 @@ NODE_GRAPH = {
     # 따로 둔다. 소/중/대(근접)는 원래 X,Y가 완전히 같고 Z(선반 높이)만
     # 달랐는데, 지상 로봇은 Z를 무시하므로 실제로는 같은 지점이었다 —
     # 사이즈별로 Y(랙 안쪽 깊이)를 갈라 물리적으로도 분리했고, 우회 통로는 아예
-    # 다른 Y대(허브와 근접 통로 사이 빈 공간)를 쓴다. 근접/우회 두 직선(대-중-소를
-    # 잇는 선)이 X까지 같으면 앞뒤로 겹쳐 보이므로, 우회 쪽 X를 중심에서 바깥
-    # 방향으로 0.6m 밀어서 두 직선이 좌우로 나란히 떨어지게 했다.
-    "RackA_대":       {"position": (-3.75, 2.5, 2.1), "neighbors": ["RackA_중"]},
-    "RackA_중":       {"position": (-3.75, 3.0, 1.2), "neighbors": ["RackA_소"]},
-    "RackA_소":       {"position": (-3.75, 3.5, 0.3), "neighbors": ["RackA_OUT"]},
-    "RackA_대_우회":   {"position": (-4.35, 2.5, 2.1), "neighbors": ["RackA_중_우회"]},
-    "RackA_중_우회":   {"position": (-4.35, 3.0, 1.2), "neighbors": ["RackA_소_우회"]},
-    "RackA_소_우회":   {"position": (-4.35, 3.5, 0.3), "neighbors": ["RackA_OUT"]},
-    "RackA_OUT":     {"position": (-2.0, 4.3, 0.0),  "neighbors": TYPE_WAIT_NODES["A"]},  # 작업 후 바로 자기 홈으로 복귀
+    # 다른 X대(근접 통로 옆, 중심에서 바깥 방향으로 0.6m)를 써서 두 직선이
+    # 좌우로 나란히 떨어지게 했다.
+    "RackA_대":       {"position": (-1.25, 3.5, 2.1), "neighbors": ["RackA_중"]},
+    "RackA_중":       {"position": (-1.25, 3.0, 1.2), "neighbors": ["RackA_소"]},
+    "RackA_소":       {"position": (-1.25, 2.5, 0.3), "neighbors": ["RackA_OUT"]},
+    "RackA_대_우회":   {"position": (-1.85, 3.5, 2.1), "neighbors": ["RackA_중_우회"]},
+    "RackA_중_우회":   {"position": (-1.85, 3.0, 1.2), "neighbors": ["RackA_소_우회"]},
+    "RackA_소_우회":   {"position": (-1.85, 2.5, 0.3), "neighbors": ["RackA_OUT"]},
+    "RackA_OUT":     {"position": (-1.25, 2.0, 0.0), "neighbors": [PICKUP_NODE["A"], PICKUP_WAIT_NODE["A"]]},
 
-    # 4. 랙 B — 컨베이어에서 A보다 더 먼 안쪽 랙. 실제 창고 배치상 A/B가 앞뒤로
-    # 겹쳐있는 한 쌍이라, 근접/우회 통로 전체를 A 대비 Y로 3.0m씩 더 뒤로
-    # 밀어서 "더 멀다"를 물리적으로 표현한다. 이 정도는 밀어야 HUB_1에서
-    # 잰 실제 직선거리가 A보다 확실히 길어진다 — B가 A보다 HUB_1의 X(=0.0)에
-    # 더 가까운 X(-1.25 vs -3.75)에 있어서, 조금만 밀면 X 이득 때문에 오히려
-    # B가 더 가깝게 계산돼버린다(1.7m로는 부족, 2.0m도 근소해서 3.0m로 확보).
-    "RackB_대":       {"position": (-1.25, 2.5, 2.1), "neighbors": ["RackB_중"]},
-    "RackB_중":       {"position": (-1.25, 3.0, 1.2), "neighbors": ["RackB_소"]},
-    "RackB_소":       {"position": (-1.25, 3.5, 0.3), "neighbors": ["RackB_OUT"]},
-    "RackB_대_우회":   {"position": (-1.85, 2.5, 2.1), "neighbors": ["RackB_중_우회"]},
-    "RackB_중_우회":   {"position": (-1.85, 3.0, 1.2), "neighbors": ["RackB_소_우회"]},
-    "RackB_소_우회":   {"position": (-1.85, 3.5, 0.3), "neighbors": ["RackB_OUT"]},
-    "RackB_OUT":     {"position": (-0.5, 4.3, 0.0),  "neighbors": TYPE_WAIT_NODES["B"]},
+    # 4. 랙 B — A보다 컨베이어에서 더 먼("바깥쪽") 랙.
+    "RackB_대":       {"position": (-3.75, 3.5, 2.1), "neighbors": ["RackB_중"]},
+    "RackB_중":       {"position": (-3.75, 3.0, 1.2), "neighbors": ["RackB_소"]},
+    "RackB_소":       {"position": (-3.75, 2.5, 0.3), "neighbors": ["RackB_OUT"]},
+    "RackB_대_우회":   {"position": (-4.35, 3.5, 2.1), "neighbors": ["RackB_중_우회"]},
+    "RackB_중_우회":   {"position": (-4.35, 3.0, 1.2), "neighbors": ["RackB_소_우회"]},
+    "RackB_소_우회":   {"position": (-4.35, 2.5, 0.3), "neighbors": ["RackB_OUT"]},
+    "RackB_OUT":     {"position": (-3.75, 2.0, 0.0), "neighbors": [PICKUP_NODE["B"], PICKUP_WAIT_NODE["B"]]},
 
-    # 5. 랙 C — 컨베이어에서 D보다 더 먼 안쪽 랙(B와 같은 이유로 Y를 3.0m 더 뒤로 뺌).
-    "RackC_대":       {"position": (1.25, 2.5, 2.1),  "neighbors": ["RackC_중"]},
-    "RackC_중":       {"position": (1.25, 3.0, 1.2),  "neighbors": ["RackC_소"]},
-    "RackC_소":       {"position": (1.25, 3.5, 0.3),  "neighbors": ["RackC_OUT"]},
-    "RackC_대_우회":   {"position": (1.85, 2.5, 2.1),  "neighbors": ["RackC_중_우회"]},
-    "RackC_중_우회":   {"position": (1.85, 3.0, 1.2),  "neighbors": ["RackC_소_우회"]},
-    "RackC_소_우회":   {"position": (1.85, 3.5, 0.3),  "neighbors": ["RackC_OUT"]},
-    "RackC_OUT":     {"position": (2.0, 4.3, 0.0),   "neighbors": TYPE_WAIT_NODES["C"]},
+    # 5. 랙 C — D보다 컨베이어에서 더 먼("바깥쪽") 랙. X는 A/B 랙 쌍과 좌우
+    # 대칭 느낌이 나도록 픽업/대기 구역 전체 오른쪽으로 크게 밀어냈다(원래
+    # 1.25 → 13.15, +11.9m 이동 — D도 동일 오프셋). 픽업 지점(PICKUP_C)은
+    # 그대로 두고 랙+경유지만 옮겼으므로 PICKUP_C→HUB_C 본선이 그만큼
+    # 길어지는데, 이미 세분화돼 있어 안전하다.
+    "RackC_대":       {"position": (13.15, 3.5, 2.1), "neighbors": ["RackC_중"]},
+    "RackC_중":       {"position": (13.15, 3.0, 1.2), "neighbors": ["RackC_소"]},
+    "RackC_소":       {"position": (13.15, 2.5, 0.3), "neighbors": ["RackC_OUT"]},
+    "RackC_대_우회":   {"position": (13.75, 3.5, 2.1), "neighbors": ["RackC_중_우회"]},
+    "RackC_중_우회":   {"position": (13.75, 3.0, 1.2), "neighbors": ["RackC_소_우회"]},
+    "RackC_소_우회":   {"position": (13.75, 2.5, 0.3), "neighbors": ["RackC_OUT"]},
+    "RackC_OUT":     {"position": (13.75, 2.0, 0.0), "neighbors": [PICKUP_NODE["C"], PICKUP_WAIT_NODE["C"]]},
 
-    # 6. 랙 D
-    "RackD_대":       {"position": (3.75, 2.5, 2.1),  "neighbors": ["RackD_중"]},
-    "RackD_중":       {"position": (3.75, 3.0, 1.2),  "neighbors": ["RackD_소"]},
-    "RackD_소":       {"position": (3.75, 3.5, 0.3),  "neighbors": ["RackD_OUT"]},
-    "RackD_대_우회":   {"position": (4.35, 2.5, 2.1),  "neighbors": ["RackD_중_우회"]},
-    "RackD_중_우회":   {"position": (4.35, 3.0, 1.2),  "neighbors": ["RackD_소_우회"]},
-    "RackD_소_우회":   {"position": (4.35, 3.5, 0.3),  "neighbors": ["RackD_OUT"]},
-    "RackD_OUT":     {"position": (4.5, 4.3, 0.0),   "neighbors": TYPE_WAIT_NODES["D"]},
+    # 6. 랙 D — C보다 컨베이어에 더 가까운("안쪽") 랙.
+    "RackD_대":       {"position": (10.65, 3.5, 2.1), "neighbors": ["RackD_중"]},
+    "RackD_중":       {"position": (10.65, 3.0, 1.2), "neighbors": ["RackD_소"]},
+    "RackD_소":       {"position": (10.65, 2.5, 0.3), "neighbors": ["RackD_OUT"]},
+    "RackD_대_우회":   {"position": (11.25, 3.5, 2.1), "neighbors": ["RackD_중_우회"]},
+    "RackD_중_우회":   {"position": (11.25, 3.0, 1.2), "neighbors": ["RackD_소_우회"]},
+    "RackD_소_우회":   {"position": (11.25, 2.5, 0.3), "neighbors": ["RackD_OUT"]},
+    "RackD_OUT":     {"position": (11.25, 2.0, 0.0), "neighbors": [PICKUP_NODE["D"], PICKUP_WAIT_NODE["D"]]},
 }
 
-# 로봇 수만큼 전용 대기 슬롯을 생성해 그래프에 붙인다. 예전엔 한 줄로 쭉
-# 늘어놓고 픽업 지점과의 거리(_WAIT_BASE_Y)를 일부러 멀리(-6.0) 둬서 왕복
-# 구간을 눈으로 관측하기 쉽게 했는데, 실제로 써보니 매 작업마다 왕복이 너무
-# 오래 걸려서 각자 자기 종류의 PICKUP_X 바로 앞으로 붙였다. 같은 종류 2대는
-# 앞뒤로(_WAIT_DEPTH_SPACING_M) 벌리는데, 이 값도 Nova Carter 스폰 충돌
-# 전례(0.5m 확실히 충돌, 1.0m도 부족, 2.0m에서 해결됨)를 따라 2.0m로 잡았다.
-# PICKUP_X 간격도 2.0m라서(위 섹션 참고) 종류끼리 X만으로 이미 2.0m 이상
-# 떨어지므로 더 이상 Y를 어긋나게(stagger) 둘 필요가 없다.
-_WAIT_DEPTH_SPACING_M = 2.0
-_WAIT_BASE_Y, _WAIT_BASE_Z = -1.5, 0.0
-_ROBOT_IDS_IN_ORDER = list(ROBOT_SHOE_TYPE.keys())
-for _i, _wait_node in enumerate(WAIT_NODE_IDS):
-    _robot_id = _ROBOT_IDS_IN_ORDER[_i]
-    _wait_shoe_type = ROBOT_SHOE_TYPE[_robot_id]
-    _within_type_idx = _i % ROBOTS_PER_TYPE
-    _wait_x = NODE_GRAPH[PICKUP_NODE[_wait_shoe_type]]["position"][0]
-    NODE_GRAPH[_wait_node] = {
-        "position": (
-            _wait_x,
-            _WAIT_BASE_Y - _within_type_idx * _WAIT_DEPTH_SPACING_M,
-            _WAIT_BASE_Z,
-        ),
-        # 자기 담당 종류의 픽업 지점/임시 대기 지점으로만 들어간다 — 다른
-        # 종류의 픽업 지점을 거칠 일이 없다.
-        "neighbors": [PICKUP_NODE[_wait_shoe_type], PICKUP_WAIT_NODE[_wait_shoe_type]],
-    }
-
-# 배치(5켤레) 작업을 전부 마친 로봇이 다음 배치를 기다리며 대기하는 지점(종류별
-# 전용). PICKUP_X가 이미 같은 종류의 파트너 로봇에게 점유돼 있으면 여기서 약간
-# 뒤에 물러나 대기한다 — 각자 자기 PICKUP_X 바로 앞(HUB 방향)에 배치했다.
+# 배치(5켤레) 작업을 전부 마친 로봇, 혹은 그냥 파트너에게 PICKUP_X를 양보해야
+# 하는 로봇이 대신 대기하는 지점(종류별 전용). PICKUP_X 바로 뒤(HUB 반대 방향)에
+# 배치했다 — 초기 스폰 위치로도 재사용된다(ROBOT_HOME_NODE 참고).
 for _shoe_type in SHOE_TYPES:
     _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
     NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
-        # WAIT_N을 픽업 바로 앞(-1.5)까지 당겨놔서, 여기 Y를 -1.0으로 두면
-        # WAIT_N과 0.5m밖에 안 떨어져 로봇 두 대가 겹칠 수 있다 — PICKUP 쪽으로
-        # 더 붙여서(-0.5) WAIT_N과는 충분히, PICKUP과는 "바로 뒤" 정도로 유지.
         "position": (_pickup_pos[0], -0.5, _pickup_pos[2]),
         "neighbors": [PICKUP_NODE[_shoe_type]],
     }
+
+# PICKUP_X → HUB_X 굴절점(종류별 하나) — HUB_X_APPROACH를 "HUB의 X, 픽업의 Y"로
+# 두면 HUB_APPROACH→HUB 구간(수직)이 HUB와 같은 X를 쓰는 근접 레인 랙 컬럼
+# (RackX_대/중/소, Y=6.25~8.75대)을 그대로 관통해버린다 — 대각선만 없앴지
+# "세로로 랙을 뚫고 지나가는" 문제가 남아있었다. 대신 "픽업의 X, HUB의 Y"로
+# 둬서: 픽업 자신의 전용 컬럼(다른 종류의 랙과 절대 안 겹치는 X)을 타고 랙
+# 꼭대기보다 높은 HUB의 Y까지 먼저 수직으로 올라간 다음, 랙 위쪽(랙 영역보다
+# 높은 층)에서만 수평으로 HUB까지 이동한다 — 이러면 랙 영역(Y=6.25~8.75대)을
+# 수직/수평 어느 구간에서도 절대 지나가지 않는다.
+for _shoe_type in SHOE_TYPES:
+    _pickup_x = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][0]
+    _hub_y = NODE_GRAPH[f"HUB_{_shoe_type}"]["position"][1]
+    NODE_GRAPH[f"HUB_{_shoe_type}_APPROACH"] = {
+        "position": (_pickup_x, _hub_y, 0.0),
+        "neighbors": [f"HUB_{_shoe_type}"],
+    }
+    NODE_GRAPH[PICKUP_NODE[_shoe_type]]["neighbors"] = [f"HUB_{_shoe_type}_APPROACH"]
+
+# RackX_OUT → PICKUP_X 굴절점(종류별 하나) — 복귀할 때도 OUT에서 픽업까지
+# 대각선으로 바로 가면 랙 구역을 가로지른다. OUT의 X를 그대로 따라 수직으로
+# 내려온 다음, 픽업 열의 깊이(Y=0)에서 수평으로 이동하게 중간점을 끼워 넣는다
+# — 나가는 길(HUB_X_APPROACH)과 정확히 대칭되는 구조.
+#
+# B/C는 "바깥쪽" 타입이라 RackX_OUT의 X가 짝인 안쪽 타입(A/D)보다 픽업 열
+# 중심에서 더 멀다. APPROACH를 전부 같은 Y(픽업 열 깊이)에 두면, B/C의
+# OUT→APPROACH→PICKUP 구간이 그 사이에 낀 안쪽 타입(A/D)의 픽업 지점을 그대로
+# 가로지른다 — B/C만 APPROACH의 Y를 한 단 더 낮춰서(픽업 열보다 얕은 깊이)
+# 안쪽 타입 동선과 아예 다른 깊이에서 지나가게 분리한다.
+_APPROACH_Y_OFFSET = {"A": 0.0, "B": -1.0, "C": -1.0, "D": 0.0}
+for _shoe_type in SHOE_TYPES:
+    _out_x = NODE_GRAPH[f"Rack{_shoe_type}_OUT"]["position"][0]
+    _approach_y = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][1] + _APPROACH_Y_OFFSET[_shoe_type]
+    NODE_GRAPH[f"PICKUP_{_shoe_type}_APPROACH"] = {
+        "position": (_out_x, _approach_y, 0.0),
+        "neighbors": [PICKUP_NODE[_shoe_type], PICKUP_WAIT_NODE[_shoe_type]],
+    }
+    NODE_GRAPH[f"Rack{_shoe_type}_OUT"]["neighbors"] = [f"PICKUP_{_shoe_type}_APPROACH"]
 
 # 전체 포인트가 서로 너무 가깝다는 피드백으로 X,Y만 일괄로 넓힌다(Z는 선반
 # 높이라 스케일하면 랙이 비정상적으로 커지므로 그대로 둔다). 아래쪽 본선
@@ -267,11 +279,19 @@ TARGET_SLOT_NODE = {
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  C. 본선 구간 세분화 (플래투닝)                                    ║
 # ╚══════════════════════════════════════════════════════════════╝
-# 종류별로 완전히 분리된 지금도, PICKUP_X → HUB_X 구간만큼은 그 종류를 담당하는
-# 로봇 2대가 같이 쓰는 "본선"이다(그 뒤 HUB_X → RackX_대/대_우회는 둘 중 하나로만
-# 갈라지는 지선이라 원래도 안 겹침). 이 본선을 통짜 간선 하나로 두면 로봇 1대가
-# 다 지나갈 때까지 파트너가 못 나가므로, 로봇 한 대 칸(약 1.2m) 단위로 잘게
-# 쪼개서 두 로봇이 기차처럼 꼬리를 물고 지나갈 수 있게 한다.
+# 종류별로 완전히 분리된 지금도, PICKUP_X → HUB_X_APPROACH → HUB_X 구간만큼은
+# 그 종류를 담당하는 로봇 2대가 같이 쓰는 "본선"이다(그 뒤 HUB_X →
+# RackX_대/대_우회는 둘 중 하나로만 갈라지는 지선이라 원래도 안 겹침). 이
+# 본선을 통짜 간선으로 두면 로봇 1대가 다 지나갈 때까지 파트너가 못 나가므로,
+# 로봇 한 대 칸(약 1.2m) 단위로 잘게 쪼개서 두 로봇이 기차처럼 꼬리를 물고
+# 지나갈 수 있게 한다. 굴절점(HUB_X_APPROACH) 전후 두 구간 다 세분화한다.
 _MAIN_LINE_SEGMENT_M = 1.2
 for _shoe_type in SHOE_TYPES:
-    _subdivide_edge(PICKUP_NODE[_shoe_type], f"HUB_{_shoe_type}", _MAIN_LINE_SEGMENT_M)
+    _subdivide_edge(PICKUP_NODE[_shoe_type], f"HUB_{_shoe_type}_APPROACH", _MAIN_LINE_SEGMENT_M)
+    _subdivide_edge(f"HUB_{_shoe_type}_APPROACH", f"HUB_{_shoe_type}", _MAIN_LINE_SEGMENT_M)
+    # 복귀 본선(OUT → PICKUP_X_APPROACH → PICKUP_X 또는 PICKUP_WAIT_X)도 같은
+    # 이유로 세분화한다 — 픽업이 이미 점유돼 있으면 PICKUP_WAIT_X로 바로 가는
+    # 경로도 실제로 쓰이므로 그 갈래도 빠뜨리지 않는다.
+    _subdivide_edge(f"Rack{_shoe_type}_OUT", f"PICKUP_{_shoe_type}_APPROACH", _MAIN_LINE_SEGMENT_M)
+    _subdivide_edge(f"PICKUP_{_shoe_type}_APPROACH", PICKUP_NODE[_shoe_type], _MAIN_LINE_SEGMENT_M)
+    _subdivide_edge(f"PICKUP_{_shoe_type}_APPROACH", PICKUP_WAIT_NODE[_shoe_type], _MAIN_LINE_SEGMENT_M)
