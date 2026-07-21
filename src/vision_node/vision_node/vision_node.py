@@ -15,8 +15,8 @@ from sorting_line_interfaces.srv import InspectShoePair
 from sorting_line_interfaces.msg import ShoeInspectionResult
 
 
-CONF_THRESHOLD_SHOE = 0.5
-CONF_THRESHOLD_DEFECT = 0.2
+CONF_THRESHOLD_SHOE = 0.6
+CONF_THRESHOLD_DEFECT = 0.4
 CONF_THRESHOLD_MIN = min(CONF_THRESHOLD_SHOE, CONF_THRESHOLD_DEFECT)
 DEFECT_OVERLAP_THRESHOLD = 0.3
 
@@ -266,8 +266,16 @@ class VisionNode(Node):
             return []
 
         results = self.model.predict(
-            image, conf=CONF_THRESHOLD_MIN, imgsz=self.img_size, verbose=False,
+            image, conf=CONF_THRESHOLD_MIN, imgsz=self.img_size,
+            iou=0.5,  # NMS IoU 임계값 명시
+            verbose=False,
         )
+
+        import cv2
+        import time
+        annotated = results[0].plot()
+        debug_path = f'/tmp/debug_inference_{time.time()}.png'
+        cv2.imwrite(debug_path, annotated)
 
         dets = []
         if len(results) > 0:
