@@ -13,7 +13,7 @@ from rclpy.node import Node
 
 from sorting_line_interfaces.srv import ShoesList
 
-AUTO_TRIGGER_INTERVAL_SEC = 1.0
+AUTO_TRIGGER_INTERVAL_SEC = 3.0
 # 소/중/대 경계(SIZE_THRESHOLDS_MM=(255,275))에 걸치는 실측 사이즈 그대로 사용
 SHOE_LENGTH_CHOICES_MM = [240, 260, 280]
 SHOE_TYPE_LABELS = ["A", "B", "C", "D"]
@@ -39,8 +39,9 @@ class MainControlStub(Node):
             return
         request = ShoesList.Request()
         request.shoes_num = next(_SHOES_NUM_CYCLE)
+        request.shoes_length = [280, 280, 260, 260, 240]
         # request.shoes_num = random.randint(0, len(SHOE_TYPE_LABELS) - 1)
-        request.shoes_length = [random.choice(SHOE_LENGTH_CHOICES_MM) for _ in range(5)]
+        # request.shoes_length = [random.choice(SHOE_LENGTH_CHOICES_MM) for _ in range(5)]
         self.client.call_async(request)
         self.get_logger().info(
             f"[전송] 종류={SHOE_TYPE_LABELS[request.shoes_num]} 길이={request.shoes_length}"
