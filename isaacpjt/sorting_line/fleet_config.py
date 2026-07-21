@@ -54,11 +54,13 @@ NODE_GRAPH = {
     # 1. 픽업 지점 (신발 종류별로 분리 — 각 WAIT_N은 자기 담당 종류의 픽업
     # 지점으로만 들어간다). 실제 컨베이어는 아직 단일 벨트/단일 픽업 지점이라
     # 아래 4곳의 좌표는 임시값이다 — 종류별 벨트/분기 배치가 실제로 정해지면
-    # 실측치로 교체해야 한다.
+    # 실측치로 교체해야 한다. 간격을 2.0m로 둔 건 Nova Carter 스폰 충돌
+    # 전례(0.5m 확실히 충돌, 1.0m도 부족, 2.0m에서 해결됨) 때문 — WAIT_N도
+    # 이 X를 그대로 따라가므로, 여기가 좁으면 로봇 스폰 위치도 같이 좁아진다.
     "PICKUP_A":     {"position": (1.7, 0.0, 0.794), "neighbors": ["HUB_A"]},
-    "PICKUP_B":     {"position": (2.7, 0.0, 0.794), "neighbors": ["HUB_B"]},
-    "PICKUP_C":     {"position": (3.7, 0.0, 0.794), "neighbors": ["HUB_C"]},
-    "PICKUP_D":     {"position": (4.7, 0.0, 0.794), "neighbors": ["HUB_D"]},
+    "PICKUP_B":     {"position": (3.7, 0.0, 0.794), "neighbors": ["HUB_B"]},
+    "PICKUP_C":     {"position": (5.7, 0.0, 0.794), "neighbors": ["HUB_C"]},
+    "PICKUP_D":     {"position": (7.7, 0.0, 0.794), "neighbors": ["HUB_D"]},
 
     # 2. 종류별 전용 경유지 — 다른 종류 로봇과는 어떤 노드도 공유하지 않는다
     # (자기 종류 2대끼리만 노드 락을 놓고 경쟁). 예전에 8대 전체가 HUB_1~4
@@ -127,23 +129,28 @@ NODE_GRAPH = {
     "RackD_OUT":     {"position": (4.5, 4.3, 0.0),   "neighbors": TYPE_WAIT_NODES["D"]},
 }
 
-# 로봇 수만큼 전용 대기 슬롯을 생성해 그래프에 붙인다 (자기 종류 픽업 지점 앞에
-# 나란히 배치). 간격은 Nova Carter 실측 트랙폭(0.4132m)보다 충분히 여유 있게
-# 잡는다 — 차체(캐스터 포함)는 트랙폭보다 더 커서, 너무 좁게 스폰하면 스폰
-# 직후 서로 겹쳐 PhysX가 충돌로 인식하고 강하게 밀어내면서 로봇이 튕겨나가는
-# 문제가 생긴다.
-#
-# 픽업 지점과의 거리(_WAIT_BASE_Y)는 일부러 멀리 뒀다 — 랙/컨베이어 노드들은
-# 실제 스폰된 USD 에셋 위치와 맞춰져 있어서 함부로 못 늘리지만, WAIT 슬롯은
-# 어떤 실물 에셋과도 안 묶인 빈 공간이라 여기를 멀리 떨어뜨리면 매 태스크마다
-# 왕복 구간이 길어져서 실제 이동을 눈으로 관측하기 훨씬 쉬워진다.
-_WAIT_SPACING_M = 2.0
-_WAIT_BASE_X, _WAIT_BASE_Y, _WAIT_BASE_Z = 1.7, -6.0, 0.0
+# 로봇 수만큼 전용 대기 슬롯을 생성해 그래프에 붙인다. 예전엔 한 줄로 쭉
+# 늘어놓고 픽업 지점과의 거리(_WAIT_BASE_Y)를 일부러 멀리(-6.0) 둬서 왕복
+# 구간을 눈으로 관측하기 쉽게 했는데, 실제로 써보니 매 작업마다 왕복이 너무
+# 오래 걸려서 각자 자기 종류의 PICKUP_X 바로 앞으로 붙였다. 같은 종류 2대는
+# 앞뒤로(_WAIT_DEPTH_SPACING_M) 벌리는데, 이 값도 Nova Carter 스폰 충돌
+# 전례(0.5m 확실히 충돌, 1.0m도 부족, 2.0m에서 해결됨)를 따라 2.0m로 잡았다.
+# PICKUP_X 간격도 2.0m라서(위 섹션 참고) 종류끼리 X만으로 이미 2.0m 이상
+# 떨어지므로 더 이상 Y를 어긋나게(stagger) 둘 필요가 없다.
+_WAIT_DEPTH_SPACING_M = 2.0
+_WAIT_BASE_Y, _WAIT_BASE_Z = -1.5, 0.0
 _ROBOT_IDS_IN_ORDER = list(ROBOT_SHOE_TYPE.keys())
 for _i, _wait_node in enumerate(WAIT_NODE_IDS):
-    _wait_shoe_type = ROBOT_SHOE_TYPE[_ROBOT_IDS_IN_ORDER[_i]]
+    _robot_id = _ROBOT_IDS_IN_ORDER[_i]
+    _wait_shoe_type = ROBOT_SHOE_TYPE[_robot_id]
+    _within_type_idx = _i % ROBOTS_PER_TYPE
+    _wait_x = NODE_GRAPH[PICKUP_NODE[_wait_shoe_type]]["position"][0]
     NODE_GRAPH[_wait_node] = {
-        "position": (_WAIT_BASE_X - _i * _WAIT_SPACING_M, _WAIT_BASE_Y, _WAIT_BASE_Z),
+        "position": (
+            _wait_x,
+            _WAIT_BASE_Y - _within_type_idx * _WAIT_DEPTH_SPACING_M,
+            _WAIT_BASE_Z,
+        ),
         # 자기 담당 종류의 픽업 지점/임시 대기 지점으로만 들어간다 — 다른
         # 종류의 픽업 지점을 거칠 일이 없다.
         "neighbors": [PICKUP_NODE[_wait_shoe_type], PICKUP_WAIT_NODE[_wait_shoe_type]],
@@ -155,7 +162,10 @@ for _i, _wait_node in enumerate(WAIT_NODE_IDS):
 for _shoe_type in SHOE_TYPES:
     _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
     NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
-        "position": (_pickup_pos[0], -1.0, _pickup_pos[2]),
+        # WAIT_N을 픽업 바로 앞(-1.5)까지 당겨놔서, 여기 Y를 -1.0으로 두면
+        # WAIT_N과 0.5m밖에 안 떨어져 로봇 두 대가 겹칠 수 있다 — PICKUP 쪽으로
+        # 더 붙여서(-0.5) WAIT_N과는 충분히, PICKUP과는 "바로 뒤" 정도로 유지.
+        "position": (_pickup_pos[0], -0.5, _pickup_pos[2]),
         "neighbors": [PICKUP_NODE[_shoe_type]],
     }
 

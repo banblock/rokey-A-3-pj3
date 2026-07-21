@@ -6,15 +6,14 @@ from isaacsim.core.utils.extensions import enable_extension
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
-import random
 import numpy as np
 import omni.usd
 import omni.graph.core as og
 import usdrt.Sdf
-from pxr import PhysxSchema, UsdLux, Gf
+from pxr import UsdLux
 
 from isaacsim.core.api import World
-from isaacsim.core.api.objects import DynamicCuboid, VisualCuboid
+from isaacsim.core.api.objects import VisualCuboid
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
@@ -30,24 +29,8 @@ dome_light.CreateIntensityAttr(1000.0)
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  A. 파라미터                                                   ║
 # ╚══════════════════════════════════════════════════════════════╝
-# 컨베이어는 분류 없이 신발을 비전 검사 지점(=AMR 픽업 지점)까지만 옮긴다.
-# 목적지 배정/이동은 AMR + FMS가 담당 (컨베이어에는 diverter 없음).
-#
-# ConveyorBelt_A06(패브릭 단일 트랙)은 표면이 root 기준 약 1.78m 위에 authored되어
-# 있어서(실측), 지상 AMR이 닿을 수 있는 높이로 쓰려면 root 자체를 그만큼 아래로
-# 내려야 한다 — 프레임 하단부가 바닥에 파묻히는 대신 벨트 표면 높이를 맞춘다.
-BELT_LENGTH = 2.0            # set_local_scale의 X 배율 (원본 모듈 길이 약 2m → 실측 총 길이 약 4m)
-BELT_SPEED = 0.4  # m/s
-BELT_START_X = 0.0            # 실측: 벨트 원점이 중앙이 아니라 시작 모서리에 있음
-BELT_END_X = 4.0               # 실측 X 최대값
-BELT_WIDTH = 0.9                # 실측 Y 폭
-BELT_SURFACE_Z = 0.794           # 목표 표면 높이 (AMR 접근 가능한 높이로 유지)
-_BELT_ASSET_OFFSET = 1.7805298618227245  # 실측: root=0.025일 때 Belt 표면 top까지의 거리
-BELT_TOP_Z = BELT_SURFACE_Z - _BELT_ASSET_OFFSET  # 벨트 root의 world Z 위치 (음수 = 바닥 아래로 내림)
-
-SHOE_SIZE = np.array([0.15, 0.08, 0.05])
-SHOE_SPAWN_POS = np.array([BELT_START_X + 0.3, 0.0, BELT_SURFACE_Z + SHOE_SIZE[2] / 2.0 + 0.01])
-PICKUP_POINT = np.array([BELT_END_X - 0.3, 0.0, BELT_SURFACE_Z])  # 비전 검사 완료 후 AMR이 집어가는 지점
+# 이 스크립트는 Nova Carter만 스폰한다 — 컨베이어/랙/신발/폐기·임시저장소는
+# 없음. 목적지 배정/이동은 AMR + FMS가 담당한다.
 
 # ── AMR 함대 (Nova Carter x8, 실측 스펙) ──
 # 제어 로직은 여기 없음 — 외부 fleet_driver.py가 /<robot_id>/cmd_vel 로 조종하고,
@@ -56,95 +39,16 @@ WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
 WHEEL_JOINT_NAMES = ["joint_wheel_left", "joint_wheel_right"]
 
-# ── 종류별 랙 + 크기별 슬롯 ──
-# 신발 종류(A/B/C/D) 하나당 랙 하나, 그 랙 안에서 크기(소/중/대)에 따라 다른 높이에 배치.
-# industrialsteelshelving_a01 실측 사용 가능 높이가 z=0.1~2.4m라서 그 안을 3등분한다.
-SHOE_TYPES = ["A", "B", "C", "D"]
-SHOE_SIZES = ["소", "중", "대"]
-TYPE_COLORS = {
-    "A": np.array([0.7, 0.2, 0.2]),
-    "B": np.array([0.2, 0.5, 0.7]),
-    "C": np.array([0.6, 0.5, 0.2]),
-    "D": np.array([0.3, 0.6, 0.3]),
-}
-RACK_Y = 4.0
-RACK_SLOT_Y = RACK_Y - 0.6  # 랙 정면(픽업 접근이 쉬운 쪽)으로 살짝 나온 지점
-RACK_X = {"A": -3.75, "B": -1.25, "C": 1.25, "D": 3.75}
-SIZE_SLOT_Z = {"소": 0.3, "중": 1.2, "대": 2.1}  # 실측 프레임 범위(0.1~2.4m) 3등분 (대략치)
-
-REJECT_POS = [0.0, 5.7, 0.0]
-BUFFER_POS = {"임시저장소1": [-1.5, 5.7, 0.0], "임시저장소2": [1.5, 5.7, 0.0]}
-
-
-def get_target_slot(shoe_type, shoe_size):
-    return np.array([RACK_X[shoe_type], RACK_SLOT_Y, SIZE_SLOT_Z[shoe_size]])
-
-# ── SimReady / Isaac 표준 에셋 경로 ──
-_ASSET_DIR = "/home/rokey/Downloads"
-_WH1 = f"{_ASSET_DIR}/SimReady_Warehouse_01_NVD@10010/Assets/simready_content/common_assets/props"
-_CT1 = f"{_ASSET_DIR}/SimReady_Containers_Shipping_01_NVD@10010/Assets/simready_content/common_assets/props"
-_CT2 = f"{_ASSET_DIR}/SimReady_Containers_Shipping_02_NVD@10010/Assets/simready_content/common_assets/props"
-
-SHELVING_USD = f"{_WH1}/industrialsteelshelving_a01/industrialsteelshelving_a01.usd"
-
 _assets_root_path = get_assets_root_path()
 if _assets_root_path is None:
     raise RuntimeError("Isaac Sim 기본 에셋 서버(Nucleus)에 연결할 수 없습니다.")
 NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd"
-CONVEYOR_USD = _assets_root_path + "/Isaac/Props/Conveyors/ConveyorBelt_A06.usd"  # 패브릭 벨트, 직선/평평, 단일 트랙
-
-# 폐기/임시저장소는 종류별 랙과 별개로 존재 (지금은 라우팅 로직 없이 배치만)
-REJECT_USD = f"{_CT1}/tote_a01/tote_a01.usd"
-BUFFER_USD = {
-    "임시저장소1": f"{_CT2}/blockpallet_a06/blockpallet_a06.usd",
-    "임시저장소2": f"{_CT2}/blockpallet_b01/blockpallet_b01.usd",
-}
-
 
 def spawn_asset(usd_path, prim_path, position):
     add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
     xform = SingleXFormPrim(prim_path)
     xform.set_world_pose(position=np.array(position))
     return xform
-
-
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  B. 컨베이어 벨트 (Isaac 표준 ConveyorBelt_A06 에셋, 패브릭 단일 트랙)  ║
-# ╚══════════════════════════════════════════════════════════════╝
-# world.scene에 등록하지 않음: kinematic body는 World의 reset 시
-# 자동 속도 초기화(setLinearVelocity)를 시도해 PhysX 에러가 남기 때문
-belt = spawn_asset(CONVEYOR_USD, "/World/ConveyorBelt", position=[0.0, 0.0, BELT_TOP_Z])
-belt.set_local_scale(np.array([BELT_LENGTH, 1.0, 1.0]))
-
-# 이 에셋은 Belt 하위 프림에 이미 RigidBodyAPI가 붙어있다.
-# 루트에 또 적용하면 "다중 RigidBodyAPI 계층" 충돌 에러가 나므로,
-# 표면 속도만 이미 물리가 있는 하위 프림에 직접 적용한다.
-for _sub_path in ["/World/ConveyorBelt/Belt"]:
-    _sub_prim = stage.GetPrimAtPath(_sub_path)
-    if _sub_prim.IsValid():
-        surf_vel_api = PhysxSchema.PhysxSurfaceVelocityAPI.Apply(_sub_prim)
-        surf_vel_api.CreateSurfaceVelocityEnabledAttr(True)
-        surf_vel_api.CreateSurfaceVelocityAttr(Gf.Vec3f(BELT_SPEED, 0.0, 0.0))
-    else:
-        print(f"[경고] {_sub_path} 프림을 찾지 못함 — 에셋 내부 구조 확인 필요")
-
-# 진단용: 실제 표면 높이/범위 확인 (A06은 start_level=1이라 A04의 Rollers와 높이가 다를 수 있음)
-from pxr import Usd, UsdGeom
-_bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
-for _diag_path in ["/World/ConveyorBelt", "/World/ConveyorBelt/Belt"]:
-    _diag_prim = stage.GetPrimAtPath(_diag_path)
-    if _diag_prim.IsValid():
-        _r = _bbox_cache.ComputeWorldBound(_diag_prim).ComputeAlignedRange()
-        print(f"[진단] {_diag_path} bbox min={_r.GetMin()} max={_r.GetMax()}")
-
-pickup_marker = VisualCuboid(
-    prim_path="/World/PickupPoint",
-    name="pickup_point",
-    position=PICKUP_POINT + np.array([0.0, 0.0, 0.001]),
-    scale=np.array([0.2, BELT_WIDTH, 0.005]),
-    color=np.array([0.0, 1.0, 0.3]),
-)
-world.scene.add(pickup_marker)
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -222,51 +126,79 @@ for _robot_id, _home_node in ROBOT_HOME_NODE.items():
 
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  D. 종류별 랙 + 폐기/임시저장소                                     ║
+# ║  D. 그래프 포인트 시각화 — NODE_GRAPH의 각 지점을 바닥에 색칠된      ║
+# ║     정사각형으로 표시 (물리/충돌 없음, 순수 디버그용)                ║
 # ╚══════════════════════════════════════════════════════════════╝
-for shoe_type in SHOE_TYPES:
-    spawn_asset(SHELVING_USD, f"/World/Rack_{shoe_type}", position=[RACK_X[shoe_type], RACK_Y, 0.0])
+# fleet_config.py를 계속 손보는 중이라, 실제로 로봇이 어디로 가는지 눈으로
+# 바로 확인할 수 있게 노드 종류별로 색을 다르게 칠한다. 세분화(_subdivide_edge)
+# 로 자동 생성된 중간 칸("__"이 이름에 들어간 노드)은 개수가 많아서 작게 그린다.
+_NODE_MARKER_COLORS = {
+    "pickup": np.array([0.12, 0.54, 0.54]),        # PICKUP_X — 청록
+    "pickup_wait": np.array([0.72, 0.55, 0.31]),   # PICKUP_WAIT_X — 황토
+    "hub": np.array([0.76, 0.47, 0.18]),           # HUB_X — 주황
+    "rack_detour": np.array([0.49, 0.36, 0.75]),   # 우회 통로 — 보라
+    "rack_near": np.array([0.23, 0.43, 0.65]),     # 근접 통로 — 파랑
+    "rack_out": np.array([0.42, 0.48, 0.36]),      # RackX_OUT — 올리브
+    "wait": np.array([0.60, 0.59, 0.54]),          # WAIT_N(홈 슬롯) — 회색
+    "segment": np.array([0.72, 0.70, 0.63]),       # 본선 세분화 칸 — 연한 회색
+}
 
-spawn_asset(REJECT_USD, "/World/Storage_Reject", position=REJECT_POS)
-for label, usd_path in BUFFER_USD.items():
-    spawn_asset(usd_path, f"/World/Storage_{label}", position=BUFFER_POS[label])
+
+def _categorize_node(name):
+    if name.startswith("PICKUP_WAIT_"):
+        return "pickup_wait"
+    if name.startswith("PICKUP_") and "__" not in name:
+        return "pickup"
+    if name.startswith("HUB_"):
+        return "hub"
+    if "__" in name:
+        return "segment"
+    if name.startswith("WAIT_"):
+        return "wait"
+    if "_우회" in name and not name.endswith("_OUT"):
+        return "rack_detour"
+    if name.startswith("Rack") and name.endswith("_OUT"):
+        return "rack_out"
+    return "rack_near"
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  E. 테스트용 신발(큐브) 스폰 — 종류/크기 랜덤 배정 (비전 분류 결과 흉내)   ║
-# ╚══════════════════════════════════════════════════════════════╝
-shoe_count = 0
-pending_shoes = []  # 벨트 위에서 픽업 대기 중인 신발 목록 (FIFO): [{"obj","type","size"}, ...]
+# USD 프림 경로/이름은 아스키 식별자만 허용한다 — 노드 이름에 들어간 한글
+# (소/중/대/우회)이 그대로 들어가면 프림 생성이 실패하므로 아스키로 치환한다.
+_KOREAN_TO_ASCII = {"소": "S", "중": "M", "대": "L", "우회": "Detour"}
 
 
-def spawn_shoe():
-    global shoe_count
-    shoe_count += 1
-    shoe_type = random.choice(SHOE_TYPES)
-    shoe_size = random.choice(SHOE_SIZES)
-    shoe = DynamicCuboid(
-        prim_path=f"/World/Shoe_{shoe_count}",
-        name=f"shoe_{shoe_count}",
-        position=SHOE_SPAWN_POS,
-        scale=SHOE_SIZE,
-        color=TYPE_COLORS[shoe_type],
-        mass=0.05,
+def _sanitize_prim_name(name):
+    safe = name
+    for korean, ascii_ in _KOREAN_TO_ASCII.items():
+        safe = safe.replace(korean, ascii_)
+    return safe
+
+
+for _node_name, _node_data in NODE_GRAPH.items():
+    _category = _categorize_node(_node_name)
+    _color = _NODE_MARKER_COLORS[_category]
+    _safe_name = _sanitize_prim_name(_node_name)
+    _size = 0.15 if _category == "segment" else 0.35
+    _pos = list(_node_data["position"])
+    _pos[2] = 0.01  # 바닥 위로 살짝 띄워서 그라운드 플레인과 Z-fighting 방지
+    marker = VisualCuboid(
+        prim_path=f"/World/GraphMarkers/{_safe_name}",
+        name=f"marker_{_safe_name}",
+        position=np.array(_pos),
+        scale=np.array([_size, _size, 0.02]),
+        color=_color,
     )
-    world.scene.add(shoe)
-    pending_shoes.append({"obj": shoe, "type": shoe_type, "size": shoe_size})
-    print(f"[스폰] 신발 #{shoe_count} 종류={shoe_type} 크기={shoe_size} @ {SHOE_SPAWN_POS}")
+    world.scene.add(marker)
 
 
 world.scene.add_default_ground_plane()
 world.reset()
-spawn_shoe()
 
 frame = 0
 was_playing = False
 
 print("\n" + "=" * 60)
-print(f"[환경] 컨베이어 벨트 + Nova Carter {len(ROBOT_HOME_NODE)}대(ROS2 브리지) + "
-      f"종류별 랙 {len(SHOE_TYPES)}개(각 {len(SHOE_SIZES)}슬롯) + 폐기/임시저장소 생성 완료")
+print(f"[환경] Nova Carter {len(ROBOT_HOME_NODE)}대(ROS2 브리지) 생성 완료")
 print("  AMR 제어: 외부 fleet_driver.py가 /<robot_id>/cmd_vel 로 담당")
 print("=" * 60)
 
@@ -275,20 +207,7 @@ while simulation_app.is_running():
     is_playing = world.is_playing()
 
     if is_playing and not was_playing:
-        frame = 0
         print("[재생] 시작")
-
-    if is_playing:
-        frame += 1
-
-        # 5초(≈300 step)마다 새 신발 스폰
-        if frame % 300 == 0:
-            spawn_shoe()
-
-        # pending_shoes는 픽업 지점 도달을 기다리는 FIFO 큐로 계속 쌓인다.
-        # 실제로 이 신발을 로봇에 옮기는 로직(비전 srv 분류 + /fms/pickup_ready
-        # 수신 후 프림을 로봇에 붙였다 랙에 내려놓는 처리)은 아직 이 스크립트에
-        # 없다 — 다음 단계에서 이어서 구현.
 
     was_playing = is_playing
 
