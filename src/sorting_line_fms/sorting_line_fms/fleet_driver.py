@@ -41,7 +41,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-from fleet_config import ROBOT_HOME_NODE  # noqa: E402
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE  # noqa: E402
 
 ARRIVE_RADIUS_M = 0.15
 ANGLE_TOLERANCE_RAD = 0.25   # 이 안이면 회전 없이 바로 직진
@@ -85,8 +85,19 @@ class FleetDriver(Node):
     def _ensure_robot(self, robot_id):
         if robot_id in self.robots:
             return
+        # IsaacComputeOdometry는 로봇의 "스폰 지점을 (0,0)으로 하는" 상대 좌표를
+        # 낸다(실제 휠 오도메트리와 동일한 표준 동작 — 버그가 아니다). 반면
+        # NODE_GRAPH/목표 좌표는 전부 월드(절대) 좌표라서, 오도메트리 값을 그대로
+        # "현재 위치"로 쓰면 목표까지의 거리·방향 계산이 완전히 틀어진다(실제로
+        # 로봇들이 마커와 무관한 방향으로 튀는 문제의 원인이었음). 스폰 시점의
+        # 월드 좌표(=자기 홈 슬롯 위치)를 오프셋으로 저장해뒀다가, 오도메트리를
+        # 받을 때마다 더해서 월드 좌표로 변환한다. (스폰 시 자세는 기본값 그대로
+        # 라 회전 보정 없이 평행이동만으로 충분하다.)
+        home_node = ROBOT_HOME_NODE[robot_id]
+        spawn_x, spawn_y, _spawn_z = NODE_GRAPH[home_node]["position"]
         self.robots[robot_id] = {
             "x": 0.0, "y": 0.0, "yaw": 0.0, "has_odom": False,
+            "spawn_x": spawn_x, "spawn_y": spawn_y,
             "target_xy": None, "target_node": None,
             "cmd_pub": self.create_publisher(Twist, f"/{robot_id}/cmd_vel", 10),
         }
@@ -100,7 +111,8 @@ class FleetDriver(Node):
     def _on_odom(self, robot_id, msg):
         robot = self.robots[robot_id]
         pos = msg.pose.pose.position
-        robot["x"], robot["y"] = pos.x, pos.y
+        robot["x"] = pos.x + robot["spawn_x"]
+        robot["y"] = pos.y + robot["spawn_y"]
         robot["yaw"] = _yaw_from_quaternion(msg.pose.pose.orientation)
         robot["has_odom"] = True
 
