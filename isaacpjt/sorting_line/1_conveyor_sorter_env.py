@@ -117,12 +117,42 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
     return graph
 
 
+# 로봇 자체(섀시)에 색을 입히지 않고, 위에 종류별 색깔 비콘을 따로 띄운다 —
+# Nova Carter는 이미 자체 머티리얼이 있는 복잡한 참조 에셋이라 내부 메시의
+# 재질을 직접 바꾸는 건 실패 위험이 크다. 비콘은 매 시뮬레이션 스텝마다
+# 섀시의 월드 위치를 읽어 같은 위치(+ 높이 오프셋)로 따라가게 한다
+# (spawn_asset()과 동일한 set_world_pose 패턴 — 부모-자식 로컬 좌표 가정 없이
+# 항상 안전하게 동작).
+_ROBOT_TYPE_COLORS = {
+    "A": np.array([0.80, 0.20, 0.20]),  # 빨강
+    "B": np.array([0.20, 0.40, 0.80]),  # 파랑
+    "C": np.array([0.85, 0.65, 0.13]),  # 노랑
+    "D": np.array([0.20, 0.70, 0.30]),  # 초록
+}
+_BEACON_HEIGHT_OFFSET_M = 0.5
+_robot_chassis_prims = {}
+_robot_beacons = {}
+
 for _robot_id, _home_node in ROBOT_HOME_NODE.items():
     _home_pos = list(NODE_GRAPH[_home_node]["position"])
     _prim_path = f"/World/{_robot_id}"
     spawn_asset(NOVA_CARTER_USD, _prim_path, position=_home_pos)
     build_ros2_diffdrive_graph(_robot_id, chassis_prim_path=f"{_prim_path}/chassis_link")
     print(f"[스폰] {_robot_id} (담당 종류={ROBOT_SHOE_TYPE[_robot_id]}) @ {_home_node} {_home_pos}")
+
+    _robot_chassis_prims[_robot_id] = SingleXFormPrim(f"{_prim_path}/chassis_link")
+
+    _beacon_pos = list(_home_pos)
+    _beacon_pos[2] += _BEACON_HEIGHT_OFFSET_M
+    _beacon = VisualCuboid(
+        prim_path=f"/World/{_robot_id}/ColorBeacon",
+        name=f"beacon_{_robot_id}",
+        position=np.array(_beacon_pos),
+        scale=np.array([0.2, 0.2, 0.2]),
+        color=_ROBOT_TYPE_COLORS[ROBOT_SHOE_TYPE[_robot_id]],
+    )
+    world.scene.add(_beacon)
+    _robot_beacons[_robot_id] = _beacon
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -208,6 +238,17 @@ while simulation_app.is_running():
 
     if is_playing and not was_playing:
         print("[재생] 시작")
+
+    # 색깔 비콘이 로봇을 따라가게 매 스텝 섀시의 현재 월드 위치를 읽어
+    # 비콘 위치를 갱신한다. 부모-자식 프림 계층에 기대지 않고 항상 절대
+    # 위치를 다시 계산해서 넣기 때문에, 어떤 링크가 실제로 움직이는지와
+    # 무관하게 항상 정확하다.
+    if is_playing:
+        for _robot_id, _chassis in _robot_chassis_prims.items():
+            _chassis_pos, _ = _chassis.get_world_pose()
+            _beacon_pos = np.array(_chassis_pos)
+            _beacon_pos[2] += _BEACON_HEIGHT_OFFSET_M
+            _robot_beacons[_robot_id].set_world_pose(position=_beacon_pos)
 
     was_playing = is_playing
 

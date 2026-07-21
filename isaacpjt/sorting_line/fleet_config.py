@@ -169,6 +169,15 @@ for _shoe_type in SHOE_TYPES:
         "neighbors": [PICKUP_NODE[_shoe_type]],
     }
 
+# 전체 포인트가 서로 너무 가깝다는 피드백으로 X,Y만 일괄로 넓힌다(Z는 선반
+# 높이라 스케일하면 랙이 비정상적으로 커지므로 그대로 둔다). 아래쪽 본선
+# 세분화(_subdivide_edge)는 이 스케일이 다 적용된 뒤의 실제 거리를 기준으로
+# 칸을 나누므로, 칸 크기(1.2m 목표)는 이 배율과 무관하게 항상 정확하게 유지된다.
+_GRAPH_SCALE = 2.5
+for _node_data in NODE_GRAPH.values():
+    _sx, _sy, _sz = _node_data["position"]
+    _node_data["position"] = (_sx * _GRAPH_SCALE, _sy * _GRAPH_SCALE, _sz)
+
 
 def _distance(a, b):
     ax, ay, az = NODE_GRAPH[a]["position"]
