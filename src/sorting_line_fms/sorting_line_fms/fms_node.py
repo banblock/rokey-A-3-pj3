@@ -375,6 +375,31 @@ class FleetManagementSystem(Node):
             return
 
         next_node = robot["path"][next_idx]
+
+        # 근접 통로의 "대" 체크포인트로 들어가려는 참인데 이미 다른 로봇이 거기
+        # 있다면(태스크 배정 시점엔 비어있어서 근접으로 나왔지만, 그 사이 파트너가
+        # 먼저 들어온 경우) — 배정 당시 판단은 이미 낡았으니 무작정 기다리지 말고
+        # 지금(HUB 등에서) 우회로 즉시 재경로한다. _pick_rack_target은 배정 시점
+        # 스냅샷 판단이라 이동 중 상황 변화를 못 따라가는 게 근본 원인.
+        if (
+            next_node.startswith("Rack") and next_node.endswith("_대")
+            and self.node_locks.get(next_node) not in (None, robot_id)
+            and robot["task"] is not None
+            and not robot["task"]["target_node"].endswith("_우회")
+        ):
+            detour_target = f"{robot['task']['target_node']}_우회"
+            detour_path = shortest_path(robot["current_node"], detour_target)
+            if detour_path is not None:
+                self.get_logger().info(
+                    f"[{robot_id}] {next_node} 점유 중 → 우회로 재경로 "
+                    f"({robot['task']['target_node']} → {detour_target})"
+                )
+                robot["task"]["target_node"] = detour_target
+                robot["path"] = detour_path
+                robot["path_idx"] = 0
+                next_idx = 1
+                next_node = robot["path"][next_idx]
+
         holder_id = self.node_locks[next_node]
 
         if holder_id is not None:
@@ -397,7 +422,14 @@ class FleetManagementSystem(Node):
         robot["state"] = "moving"
         robot["move_started_at"] = now
         robot["move_target"] = next_node
-        is_final_hop = next_idx == len(robot["path"]) - 1
+        # "경로의 마지막 노드일 때만 정지"로 하면, 최종 목표가 RackA_소일 때
+        # RackA_대/RackA_중처럼 세분화 칸이 아닌 진짜 노드까지 감속 없이
+        # 통과해버린다(실제로 이 버그로 랙 대/중 위치에서 안 멈추는 문제가
+        # 있었다). 정지 여부는 "세분화로 생긴 가짜 칸인지"로 판단해야 한다 —
+        # _subdivide_edge가 만드는 칸 이름은 항상 "__"(이중 언더스코어)를
+        # 포함하고, 실제 노드 이름(PICKUP_A, HUB_A, RackA_소_우회 등)은 전부
+        # 단일 언더스코어만 쓰므로 이 표시로 구분할 수 있다.
+        is_final_hop = "__" not in next_node
         self._send_move_command(robot_id, next_node, is_final_hop)
         self._clear_deadlock_alert(robot_id, now)
 
