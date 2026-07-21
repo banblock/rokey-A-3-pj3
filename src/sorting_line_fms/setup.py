@@ -23,7 +23,7 @@ setup(
     zip_safe=True,
     maintainer='rokey',
     maintainer_email='junh001224@gmail.com',
-    description='신발 분류 소팅라인 구동 노드 — FMS/Fleet Driver/비전 임시 스텁',
+    description='신발 분류 소팅라인 구동 노드 — FMS(관제탑)/Fleet Driver(중간관리자)',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -34,7 +34,7 @@ setup(
         'console_scripts': [
             'fms_node = sorting_line_fms.fms_node:main',
             'fleet_driver = sorting_line_fms.fleet_driver:main',
-            'vision_stub = sorting_line_fms.vision_stub:main',
+            'main_control_stub = sorting_line_fms.main_control_stub:main',
         ],
     },
 )

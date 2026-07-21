@@ -3,7 +3,7 @@
 <package format="3">
   <name>sorting_line_fms</name>
   <version>0.0.0</version>
-  <description>신발 분류 소팅라인 구동 노드 — FMS(관제탑), Fleet Driver(중간관리자), 비전 임시 스텁</description>
+  <description>신발 분류 소팅라인 구동 노드 — FMS(관제탑), Fleet Driver(중간관리자)</description>
   <maintainer email="junh001224@gmail.com">rokey</maintainer>
   <license>TODO: License declaration</license>
 
@@ -15,6 +15,7 @@
   <exec_depend>std_srvs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sorting_line_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
