@@ -1,0 +1,4 @@
+int32 station_id
+---
+bool accepted_request
+string status
