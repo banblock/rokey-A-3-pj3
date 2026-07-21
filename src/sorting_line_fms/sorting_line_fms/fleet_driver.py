@@ -43,7 +43,7 @@ from std_msgs.msg import String
 
 from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE  # noqa: E402
 
-ARRIVE_RADIUS_M = 0.08  # 로봇 트랙폭(0.4132m) 대비 15cm는 너무 헐거워서 8cm로 조정
+ARRIVE_RADIUS_M = 0.12  # 로봇 트랙폭(0.4132m) 대비 15cm는 너무 헐거워서 8cm로 조정
 ANGLE_TOLERANCE_RAD = 0.25   # 이 안이면 회전 없이 바로 직진
 MAX_LINEAR_MPS = 0.6
 MAX_ANGULAR_RPS = 1.2

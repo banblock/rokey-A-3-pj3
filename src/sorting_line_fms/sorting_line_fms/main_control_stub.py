@@ -13,7 +13,7 @@ from rclpy.node import Node
 
 from sorting_line_interfaces.srv import ShoesList
 
-AUTO_TRIGGER_INTERVAL_SEC = 3.0
+AUTO_TRIGGER_INTERVAL_SEC = 1.0
 # 소/중/대 경계(SIZE_THRESHOLDS_MM=(255,275))에 걸치는 실측 사이즈 그대로 사용
 SHOE_LENGTH_CHOICES_MM = [240, 260, 280]
 SHOE_TYPE_LABELS = ["A", "B", "C", "D"]
