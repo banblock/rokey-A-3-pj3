@@ -74,6 +74,13 @@ RELIABLE_EVENT_QOS = QoSProfile(
 )
 
 MAX_SHOES_PER_TRIP = 5  # 로봇 1대가 한 번 나갈 때 실을 수 있는 최대 신발 수(실제 적재 용량)
+# idle 로봇이 있어도 같은 종류 큐에 이 개수 이상 쌓이기 전에는 출발시키지 않는다
+# — 원래는 idle 로봇+큐에 뭐라도 있으면 즉시(남은 만큼만이라도) 출발시켰는데,
+# 그러면 신발이 3~4개만 들어와도 로봇이 바로 나가서 트립을 다 못 채우는 경우가
+# 잦았다. MAX_SHOES_PER_TRIP과 값이 같아야 "항상 꽉 채운 트립만 나간다"가
+# 되고, 더 작게 두면(예: 3) "3개 이상만 모이면 출발, 최대 5개까지만 싣는다"처럼
+# 최소/최대를 따로 조절할 수 있다.
+MIN_SHOES_TO_DISPATCH = 5
 # 배치 안에서 여러 사이즈가 섞여 있으면 반드시 280→260→240 순서로 방문해야 한다
 # — 랙 진입 통로가 일방통행이라 작은 사이즈부터 들르면 큰 사이즈로 되돌아갈 수 없다.
 _SIZE_VISIT_ORDER = {"280": 0, "260": 1, "240": 2}
@@ -411,7 +418,11 @@ class FleetManagementSystem(Node):
         # 로봇 등록 순서(=self.robots 삽입 순서)는 DDS 디스커버리 타이밍에 따라
         # 달라질 수 있어 보장이 없으므로, 후보를 로봇 번호로 명시적으로 정렬한다.
         for shoe_type, queue in self.task_queues.items():
-            while queue:
+            # MIN_SHOES_TO_DISPATCH개 미만이면 idle 로봇이 있어도 배정하지 않고
+            # 큐에 더 쌓일 때까지 기다린다 — 이 종류에 더 이상 안 들어올 마지막
+            # 자투리(예: MIN보다 적게 남고 다음 PickupList가 안 옴)는 그 로봇이
+            # idle인 채로 무기한 대기하게 되는데, 이건 의도된 트레이드오프다.
+            while len(queue) >= MIN_SHOES_TO_DISPATCH:
                 candidates = sorted(
                     (
                         (robot_id, robot)
@@ -555,11 +566,15 @@ class FleetManagementSystem(Node):
     def _pick_rack_target(self, canonical_target, robot_id=None):
         """canonical_target(예: RackA_240)에 대해 근접/detour 중 실제로 쓸 노드를 고른다.
 
-        근접 통로의 첫 번째 저장소(280)가 비어있으면(아직 아무도 안 왔거나, 이미 다
-        지나갔으면) 근접 그대로 쓴다. 누군가 아직 그 자리를 지나지 않았다면(이동
-        중이거나 배치 대기 중이라 락이 걸려있음) detour 통로의 같은 사이즈 노드를
-        대신 돌려준다. 실제 목표가 무엇이든(240/260/280) 판단 기준은 항상 "280"
-        하나다 — 280→260→240 순서로만 진입하기 때문에 280이 뚫려있어야 그 뒤도 갈 수 있다.
+        근접 통로는 280→260→240 순서의 일방통행 사슬이라, 목표가 240이면 280과
+        260을 실제 노드로 반드시 거쳐가야(락을 잡아야) 한다. 그래서 "280 체크포인트"
+        하나만 보면 안 되고, 체크포인트부터 목표 사이즈까지 근접 레인 구간
+        전부가 비어있어야 근접을 쓴다 — 예를 들어 260 배치를 든 로봇이 근접
+        260에서 오래 머무르는(같은 자리에 여러 개 연달아 내려놓는) 동안, 뒤따라와
+        240을 배정받은 다른 로봇이 280은 비었다는 이유만으로 근접에 진입했다가
+        260에서 오래 막히는 문제가 있었다(240은 260에 내려놓을 일이 없는데도).
+        중간 어느 한 곳이라도 점유 중이면 그 지점부터는 못 지나가므로 바로
+        detour로 보낸다.
 
         robot_id를 넘기면 "그 락을 자기 자신이 쥐고 있는 경우"는 점유로 치지
         않는다 — 같은 트립 안에서 같은 사이즈 신발을 연달아 내려놓을 때, 방금
@@ -568,11 +583,13 @@ class FleetManagementSystem(Node):
         위함이다(자기 자신이니 이동 없이 같은 자리에 이어서 내려놓으면 된다).
         새로 배정되는 로봇(아직 어떤 랙 락도 쥐고 있지 않음)에는 영향 없다.
         """
-        rack_prefix = canonical_target.split("_")[0]  # "RackA_240" → "RackA"
-        near_first_checkpoint = f"{rack_prefix}_280"
-        if self.node_locks.get(near_first_checkpoint) in (None, robot_id):
-            return canonical_target
-        return f"{canonical_target}_detour"
+        rack_prefix, target_size = canonical_target.split("_")  # "RackA_240" → "RackA", "240"
+        for size in _RACK_SIZES_IN_ORDER:  # ["280", "260", "240"] 순서로 체크포인트부터 검사
+            if self.node_locks.get(f"{rack_prefix}_{size}") not in (None, robot_id):
+                return f"{canonical_target}_detour"
+            if size == target_size:
+                break
+        return canonical_target
 
     def _pick_pickup_target(self, shoe_type):
         """배치를 다 끝낸 로봇이 향할 곳 — 자기 종류 PICKUP_X가 비어있으면

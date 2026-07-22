@@ -22,6 +22,7 @@ Isaac Sim은 로봇 제어 로직을 전혀 갖지 않는다 — 각 Nova Carter
 Z는 무시한다(신발을 몇 번째 선반에 놓을지는 이 노드가 관여하지 않는 별도 문제).
 """
 
+import importlib
 import json
 import math
 import sys
@@ -42,9 +43,22 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, robot_spawn_yaw  # noqa: E402
+# NODE_GRAPH/ROBOT_HOME_NODE/robot_spawn_yaw는 모듈 상단에서 바로 import하지
+# 않고, __init__에서 config_module 파라미터로 받은 이름으로 동적 import한다 —
+# crossing_test_fms.py처럼 운영 그래프(fleet_config)가 아닌 다른 그래프(예:
+# edge_conflict 테스트 전용 crossing_test_config)로 이 노드를 그대로 재사용할
+# 수 있게 하기 위함이다. 기본값은 fleet_config라 기존 운영 launch는 아무것도
+# 안 바꿔도 그대로 동작한다.
 
 ARRIVE_RADIUS_M = 0.12  # 로봇 트랙폭(0.4132m) 대비 15cm는 너무 헐거워서 8cm로 조정
+# 중간 경유지라도 이 거리 안에 들어오면 최고 속도를 유지하지 않고 감속한다.
+# 축 정렬(직선) 구간에서는 도착 반경을 최고 속도로 지나쳐도 그냥 "같은 선 위에서
+# 조금 더 갔다가 오는" 정도라 안 보이지만, 방향이 크게 꺾이는 지점(예:
+# PICKUP_APPROACH → PICKUP_WAIT처럼 대각선/급회전 구간)에서는 같은 오버슈트가
+# 다음 목표의 heading_error를 크게 만들어 그 반경 밖으로 휘어져 나가는(선을
+# 벗어나는) 것처럼 보인다. 너무 크게 잡으면 세분화 칸마다 다시 "잠깐 멈칫"하는
+# 문제가 재발하니 작은 값만 준다.
+OVERSHOOT_GUARD_M = 0.3
 MAX_LINEAR_MPS = 0.6
 MAX_ANGULAR_RPS = 1.2
 K_LINEAR = 0.8
@@ -70,12 +84,19 @@ class FleetDriver(Node):
 
     def __init__(self):
         super().__init__("fleet_driver")
+        self.declare_parameter("config_module", "fleet_config")
+        config_module_name = self.get_parameter("config_module").get_parameter_value().string_value
+        config = importlib.import_module(config_module_name)
+        self.NODE_GRAPH = config.NODE_GRAPH
+        self.ROBOT_HOME_NODE = config.ROBOT_HOME_NODE
+        self.robot_spawn_yaw = config.robot_spawn_yaw
+
         self.robots = {}  # robot_id -> {x, y, yaw, has_odom, target_xy, target_node, cmd_pub}
 
         self.status_pub = self.create_publisher(String, "/amr/status", 10)
         self.create_subscription(String, "/fms/commands", self._on_command, 10)
 
-        for robot_id in ROBOT_HOME_NODE:
+        for robot_id in self.ROBOT_HOME_NODE:
             self._ensure_robot(robot_id)
             self._publish_status(robot_id, "idle", "BOOT")
 
@@ -94,9 +115,9 @@ class FleetDriver(Node):
         # 저장해뒀다가, 오도메트리를 받을 때마다 회전+평행이동으로 월드 좌표로
         # 변환한다. 스폰 자세를 이제 첫 이동 방향과 맞춰서 0이 아닐 수 있으므로
         # (robot_spawn_yaw) 평행이동만으로는 부족하고 회전 보정이 반드시 필요하다.
-        home_node = ROBOT_HOME_NODE[robot_id]
-        spawn_x, spawn_y, _spawn_z = NODE_GRAPH[home_node]["position"]
-        spawn_yaw = robot_spawn_yaw(robot_id)
+        home_node = self.ROBOT_HOME_NODE[robot_id]
+        spawn_x, spawn_y, _spawn_z = self.NODE_GRAPH[home_node]["position"]
+        spawn_yaw = self.robot_spawn_yaw(robot_id)
         self.robots[robot_id] = {
             "x": 0.0, "y": 0.0, "yaw": 0.0, "has_odom": False,
             "spawn_x": spawn_x, "spawn_y": spawn_y, "spawn_yaw": spawn_yaw,
@@ -161,14 +182,19 @@ class FleetDriver(Node):
 
             heading_error = _normalize_angle(math.atan2(dy, dx) - robot["yaw"])
 
-            if robot["target_is_final"]:
+            if robot["target_is_final"] or distance <= OVERSHOOT_GUARD_M:
+                # 진짜 목적지이거나, 중간 경유지라도 도착 반경 바로 앞(OVERSHOOT_GUARD_M
+                # 이내)이면 감속한다 — 방향이 꺾이는 경유지를 최고 속도로 그대로
+                # 지나치면 다음 목표를 향한 heading_error가 커져 코너를 크게
+                # 돌며 선을 벗어나 보이는 문제가 있었다.
                 base_speed = min(K_LINEAR * distance, MAX_LINEAR_MPS)
             else:
-                # 중간 경유지(본선 세분화 칸)는 정확히 멈출 필요가 없다 — distance
-                # 비례로 감속하면 진짜 목적지가 아닌데도 각 칸 경계마다 속도가
-                # 0 가까이 떨어져서 여전히 "잠깐 멈칫"하는 것처럼 보였다. 도착
-                # 반경 진입 전까지는 최고 속도를 그대로 유지해 칸 경계를 매끄럽게
-                # 통과한다(실제 전진 속도는 아래 speed_scale로 조절됨).
+                # 아직 경유지에서 멀리 떨어져 있으면(OVERSHOOT_GUARD_M 밖) 중간
+                # 경유지(본선 세분화 칸)는 최고 속도를 그대로 유지해 칸 경계를
+                # 매끄럽게 통과한다(실제 전진 속도는 아래 speed_scale로 조절됨) —
+                # 매 칸 경계마다 처음부터 끝까지 distance 비례로 감속하면 "잠깐
+                # 멈칫"하는 문제가 있었는데, 감속 구간을 도착 직전으로만
+                # 좁혀서 그 문제는 유지하면서 코너링 오버슈트만 줄인다.
                 base_speed = MAX_LINEAR_MPS
 
             # 각도 오차가 크면 "완전 정지 후 제자리 회전 → 정렬되면 그제서야 직진"
