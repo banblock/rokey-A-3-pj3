@@ -10,6 +10,7 @@ rclpy, m0609_interfaces 등 ROS2 관련 패키지를 절대 import하지 않는�
 """
 
 import heapq
+import math
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  A. 로봇 배정 (신발 종류별 2대 전담)                                ║
@@ -312,7 +313,7 @@ TARGET_SLOT_NODE = {
 # ╚══════════════════════════════════════════════════════════════╝
 # 종류별로 완전히 분리된 지금도, PICKUP_X → HUB_X_APPROACH → HUB_X 구간만큼은
 # 그 종류를 담당하는 로봇 2대가 같이 쓰는 "본선"이다(그 뒤 HUB_X →
-# RackX_대/대_detour는 둘 중 하나로만 갈라지는 지선이라 원래도 안 겹침). 이
+# RackX_280/280_detour는 둘 중 하나로만 갈라지는 지선이라 원래도 안 겹침). 이
 # 본선을 통짜 간선으로 두면 로봇 1대가 다 지나갈 때까지 파트너가 못 나가므로,
 # 로봇 한 대 칸(약 1.2m) 단위로 잘게 쪼개서 두 로봇이 기차처럼 꼬리를 물고
 # 지나갈 수 있게 한다. 굴절점(HUB_X_APPROACH) 전후 두 구간 다 세분화한다.
@@ -325,3 +326,23 @@ for _shoe_type in SHOE_TYPES:
     # 이어지므로(PICKUP_X 직행 갈래 없음) 갈림 없는 단일 경로만 쪼개면 된다.
     _subdivide_edge(f"Rack{_shoe_type}_OUT", f"PICKUP_{_shoe_type}_APPROACH", _MAIN_LINE_SEGMENT_M)
     _subdivide_edge(f"PICKUP_{_shoe_type}_APPROACH", PICKUP_WAIT_NODE[_shoe_type], _MAIN_LINE_SEGMENT_M)
+
+
+def robot_spawn_yaw(robot_id):
+    """로봇의 스폰 자세(yaw, 라디안)를 그 로봇 홈 노드에서의 첫 이동 방향과
+    일치시키기 위한 값을 계산한다 — 안 맞추면 Isaac Sim 기본 스폰 자세(보통
+    월드 X축 방향)와 첫 이동 방향이 달라서, 시작하자마자 제자리에서 크게
+    회전부터 하고 출발하는 것처럼 보인다(실제로 스폰 스크립트가 자세를
+    아예 안 지정해서 생긴 문제였다).
+
+    3_amr_fleet.py(스폰 시 이 값으로 실제 자세를 맞춤)와 fleet_driver.py
+    (오도메트리를 월드 좌표로 바꿀 때 이 값만큼 회전 보정)가 반드시 똑같은
+    값을 써야 하므로, 각자 계산하지 않고 이 함수 하나로 공유한다.
+    """
+    home_node = ROBOT_HOME_NODE[robot_id]
+    neighbors = NODE_GRAPH[home_node]["neighbors"]
+    if not neighbors:
+        return 0.0
+    hx, hy, _hz = NODE_GRAPH[home_node]["position"]
+    nx, ny, _nz = NODE_GRAPH[neighbors[0]]["position"]
+    return math.atan2(ny - hy, nx - hx)

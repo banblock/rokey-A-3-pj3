@@ -6,6 +6,8 @@ from isaacsim.core.utils.extensions import enable_extension
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
+import math
+
 import numpy as np
 import omni.usd
 import omni.graph.core as og
@@ -18,7 +20,7 @@ from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
 
-from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
@@ -44,10 +46,15 @@ if _assets_root_path is None:
     raise RuntimeError("Isaac Sim 기본 에셋 서버(Nucleus)에 연결할 수 없습니다.")
 NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd"
 
-def spawn_asset(usd_path, prim_path, position):
+def spawn_asset(usd_path, prim_path, position, yaw=0.0):
     add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
     xform = SingleXFormPrim(prim_path)
-    xform.set_world_pose(position=np.array(position))
+    # 스폰 자세를 yaw만큼 돌려서(기본은 항상 0=월드 X축 방향) 첫 이동 방향과
+    # 맞춘다 — fleet_config.robot_spawn_yaw()가 계산해준 값을 그대로 받는다.
+    # 안 맞추면 스폰 직후 첫 홉에서 제자리 회전부터 하고 출발하는 것처럼 보인다.
+    half = yaw / 2.0
+    orientation_wxyz = np.array([math.cos(half), 0.0, 0.0, math.sin(half)])
+    xform.set_world_pose(position=np.array(position), orientation=orientation_wxyz)
     return xform
 
 
@@ -135,10 +142,14 @@ _robot_beacons = {}
 
 for _robot_id, _home_node in ROBOT_HOME_NODE.items():
     _home_pos = list(NODE_GRAPH[_home_node]["position"])
+    _home_yaw = robot_spawn_yaw(_robot_id)
     _prim_path = f"/World/{_robot_id}"
-    spawn_asset(NOVA_CARTER_USD, _prim_path, position=_home_pos)
+    spawn_asset(NOVA_CARTER_USD, _prim_path, position=_home_pos, yaw=_home_yaw)
     build_ros2_diffdrive_graph(_robot_id, chassis_prim_path=f"{_prim_path}/chassis_link")
-    print(f"[스폰] {_robot_id} (담당 종류={ROBOT_SHOE_TYPE[_robot_id]}) @ {_home_node} {_home_pos}")
+    print(
+        f"[스폰] {_robot_id} (담당 종류={ROBOT_SHOE_TYPE[_robot_id]}) @ {_home_node} {_home_pos} "
+        f"yaw={math.degrees(_home_yaw):.0f}도"
+    )
 
     _robot_chassis_prims[_robot_id] = SingleXFormPrim(f"{_prim_path}/chassis_link")
 

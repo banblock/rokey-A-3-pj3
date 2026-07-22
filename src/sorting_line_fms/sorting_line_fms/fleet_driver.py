@@ -12,7 +12,8 @@ Isaac Sim은 로봇 제어 로직을 전혀 갖지 않는다 — 각 Nova Carter
 하는 일:
   1. FMS의 /fms/commands(다음 노드 좌표)를 robot_id별로 받아 목표로 저장한다.
   2. 각 로봇의 /<robot_id>/odom을 구독해 실시간 위치/자세(x, y, yaw)를 추적한다.
-  3. go-to-goal 제어(각도 오차가 크면 제자리 회전 → 정렬되면 직진)로
+  3. go-to-goal 제어(각도 오차에 비례해 회전하면서 동시에 전진 — 오차가 클수록
+     cos(오차)만큼 속도를 줄여 자연스럽게 감속, 완전 정지 후 제자리 회전은 안 함)로
      /<robot_id>/cmd_vel(Twist)을 계산해 내보낸다.
   4. 목표 반경 안에 들어오면 정지시키고 FMS에 /amr/status arrived를 보고한다.
 
@@ -41,10 +42,9 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE  # noqa: E402
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, robot_spawn_yaw  # noqa: E402
 
 ARRIVE_RADIUS_M = 0.12  # 로봇 트랙폭(0.4132m) 대비 15cm는 너무 헐거워서 8cm로 조정
-ANGLE_TOLERANCE_RAD = 0.25   # 이 안이면 회전 없이 바로 직진
 MAX_LINEAR_MPS = 0.6
 MAX_ANGULAR_RPS = 1.2
 K_LINEAR = 0.8
@@ -85,19 +85,21 @@ class FleetDriver(Node):
     def _ensure_robot(self, robot_id):
         if robot_id in self.robots:
             return
-        # IsaacComputeOdometry는 로봇의 "스폰 지점을 (0,0)으로 하는" 상대 좌표를
-        # 낸다(실제 휠 오도메트리와 동일한 표준 동작 — 버그가 아니다). 반면
-        # NODE_GRAPH/목표 좌표는 전부 월드(절대) 좌표라서, 오도메트리 값을 그대로
-        # "현재 위치"로 쓰면 목표까지의 거리·방향 계산이 완전히 틀어진다(실제로
-        # 로봇들이 마커와 무관한 방향으로 튀는 문제의 원인이었음). 스폰 시점의
-        # 월드 좌표(=자기 홈 슬롯 위치)를 오프셋으로 저장해뒀다가, 오도메트리를
-        # 받을 때마다 더해서 월드 좌표로 변환한다. (스폰 시 자세는 기본값 그대로
-        # 라 회전 보정 없이 평행이동만으로 충분하다.)
+        # IsaacComputeOdometry는 로봇의 "스폰 지점을 원점, 스폰 자세를 0도로 하는"
+        # 로컬 좌표를 낸다(실제 휠 오도메트리와 동일한 표준 동작 — 버그가 아니다).
+        # 반면 NODE_GRAPH/목표 좌표는 전부 월드(절대) 좌표라서, 오도메트리 값을
+        # 그대로 "현재 위치"로 쓰면 목표까지의 거리·방향 계산이 완전히 틀어진다
+        # (실제로 로봇들이 마커와 무관한 방향으로 튀는 문제의 원인이었음). 스폰
+        # 시점의 월드 좌표(=자기 홈 슬롯 위치)와 스폰 자세(yaw)를 오프셋으로
+        # 저장해뒀다가, 오도메트리를 받을 때마다 회전+평행이동으로 월드 좌표로
+        # 변환한다. 스폰 자세를 이제 첫 이동 방향과 맞춰서 0이 아닐 수 있으므로
+        # (robot_spawn_yaw) 평행이동만으로는 부족하고 회전 보정이 반드시 필요하다.
         home_node = ROBOT_HOME_NODE[robot_id]
         spawn_x, spawn_y, _spawn_z = NODE_GRAPH[home_node]["position"]
+        spawn_yaw = robot_spawn_yaw(robot_id)
         self.robots[robot_id] = {
             "x": 0.0, "y": 0.0, "yaw": 0.0, "has_odom": False,
-            "spawn_x": spawn_x, "spawn_y": spawn_y,
+            "spawn_x": spawn_x, "spawn_y": spawn_y, "spawn_yaw": spawn_yaw,
             "target_xy": None, "target_node": None, "target_is_final": True,
             "cmd_pub": self.create_publisher(Twist, f"/{robot_id}/cmd_vel", 10),
         }
@@ -111,9 +113,15 @@ class FleetDriver(Node):
     def _on_odom(self, robot_id, msg):
         robot = self.robots[robot_id]
         pos = msg.pose.pose.position
-        robot["x"] = pos.x + robot["spawn_x"]
-        robot["y"] = pos.y + robot["spawn_y"]
-        robot["yaw"] = _yaw_from_quaternion(msg.pose.pose.orientation)
+        spawn_yaw = robot["spawn_yaw"]
+        cos_yaw = math.cos(spawn_yaw)
+        sin_yaw = math.sin(spawn_yaw)
+        # 오도메트리는 "스폰 자세를 0도로 하는" 로컬 프레임 좌표라서, 스폰 자세가
+        # 0이 아니면 평행이동만으로는 안 되고 스폰 yaw만큼 회전까지 시켜야
+        # 월드 좌표로 정확히 바뀐다(표준 2D 강체 변환: 회전 후 평행이동).
+        robot["x"] = robot["spawn_x"] + pos.x * cos_yaw - pos.y * sin_yaw
+        robot["y"] = robot["spawn_y"] + pos.x * sin_yaw + pos.y * cos_yaw
+        robot["yaw"] = _normalize_angle(spawn_yaw + _yaw_from_quaternion(msg.pose.pose.orientation))
         robot["has_odom"] = True
 
     def _on_command(self, msg):
@@ -153,18 +161,25 @@ class FleetDriver(Node):
 
             heading_error = _normalize_angle(math.atan2(dy, dx) - robot["yaw"])
 
-            twist = Twist()
-            if abs(heading_error) > ANGLE_TOLERANCE_RAD:
-                twist.linear.x = 0.0  # 큰 각도 오차는 제자리 회전으로 먼저 정렬
-            elif robot["target_is_final"]:
-                twist.linear.x = min(K_LINEAR * distance, MAX_LINEAR_MPS)
+            if robot["target_is_final"]:
+                base_speed = min(K_LINEAR * distance, MAX_LINEAR_MPS)
             else:
                 # 중간 경유지(본선 세분화 칸)는 정확히 멈출 필요가 없다 — distance
                 # 비례로 감속하면 진짜 목적지가 아닌데도 각 칸 경계마다 속도가
-                # 0 가까이 떨어져서(is_final_hop로 완전 정지는 막았어도) 여전히
-                # "잠깐 멈칫"하는 것처럼 보였다. 도착 반경 진입 전까지는 최고
-                # 속도를 그대로 유지해 칸 경계를 매끄럽게 통과한다.
-                twist.linear.x = MAX_LINEAR_MPS
+                # 0 가까이 떨어져서 여전히 "잠깐 멈칫"하는 것처럼 보였다. 도착
+                # 반경 진입 전까지는 최고 속도를 그대로 유지해 칸 경계를 매끄럽게
+                # 통과한다(실제 전진 속도는 아래 speed_scale로 조절됨).
+                base_speed = MAX_LINEAR_MPS
+
+            # 각도 오차가 크면 "완전 정지 후 제자리 회전 → 정렬되면 그제서야 직진"
+            # 하던 것을, 회전과 전진을 동시에 하도록 바꿨다 — cos(heading_error)를
+            # 곱해서 오차가 클수록 자연스럽게 속도를 줄이되(90도 근처에서 거의 0)
+            # 완전히 끊지는 않는다. 오차가 90도를 넘으면(목표가 뒤쪽) 뒤로 가지
+            # 않도록 0으로 clamp하고 그 자리에서 회전만 계속한다.
+            speed_scale = max(0.0, math.cos(heading_error))
+
+            twist = Twist()
+            twist.linear.x = base_speed * speed_scale
             twist.angular.z = max(-MAX_ANGULAR_RPS, min(MAX_ANGULAR_RPS, K_ANGULAR * heading_error))
             robot["cmd_pub"].publish(twist)
 

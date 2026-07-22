@@ -6,6 +6,8 @@ from isaacsim.core.utils.extensions import enable_extension
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
+import math
+
 import numpy as np
 import omni.usd
 import omni.graph.core as og
@@ -17,7 +19,7 @@ from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.storage.native import get_assets_root_path
 
-from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, robot_spawn_yaw
 
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  AMR 함대(Nova Carter x8) — 3단 구조의 3번째 계층: 순수 물리 세계        ║
@@ -62,10 +64,14 @@ if _assets_root_path is None:
 NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd"
 
 
-def spawn_asset(usd_path, prim_path, position):
+def spawn_asset(usd_path, prim_path, position, yaw=0.0):
     add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
     xform = SingleXFormPrim(prim_path)
-    xform.set_world_pose(position=np.array(position))
+    # 스폰 자세를 yaw만큼 돌려서(기본은 항상 0=월드 X축 방향) 첫 이동 방향과
+    # 맞춘다 — fleet_config.robot_spawn_yaw()가 계산해준 값을 그대로 받는다.
+    half = yaw / 2.0
+    orientation_wxyz = np.array([math.cos(half), 0.0, 0.0, math.sin(half)])
+    xform.set_world_pose(position=np.array(position), orientation=orientation_wxyz)
     return xform
 
 
@@ -129,10 +135,14 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
 # ╚══════════════════════════════════════════════════════════════╝
 for robot_id, home_node in ROBOT_HOME_NODE.items():
     home_pos = list(NODE_GRAPH[home_node]["position"])
+    home_yaw = robot_spawn_yaw(robot_id)
     prim_path = f"/World/{robot_id}"
-    spawn_asset(NOVA_CARTER_USD, prim_path, position=home_pos)
+    spawn_asset(NOVA_CARTER_USD, prim_path, position=home_pos, yaw=home_yaw)
     build_ros2_diffdrive_graph(robot_id, chassis_prim_path=f"{prim_path}/chassis_link")
-    print(f"[스폰] {robot_id} (담당 종류={ROBOT_SHOE_TYPE[robot_id]}) @ {home_node} {home_pos}")
+    print(
+        f"[스폰] {robot_id} (담당 종류={ROBOT_SHOE_TYPE[robot_id]}) @ {home_node} {home_pos} "
+        f"yaw={math.degrees(home_yaw):.0f}도"
+    )
 
 world.reset()
 simulation_app.update()
