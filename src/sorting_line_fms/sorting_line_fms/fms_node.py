@@ -36,7 +36,7 @@ from recycle_interfaces.srv import AmrState, ShoesList
 from fleet_config import (
     NODE_GRAPH,
     PICKUP_NODE,
-    PICKUP_WAIT_NODE,
+    PICKUP_WAIT_SLOTS,
     ROBOT_HOME_NODE,
     ROBOT_SHOE_TYPE,
     ROBOTS_PER_TYPE,
@@ -488,12 +488,19 @@ class FleetManagementSystem(Node):
 
     def _pick_pickup_target(self, shoe_type):
         """배치를 다 끝낸 로봇이 향할 곳 — 자기 종류 PICKUP_X가 비어있으면
-        PICKUP_X, 이미 같은 종류 파트너 로봇이 있으면 그 바로 뒤의
-        PICKUP_WAIT_X에서 대기한다."""
+        PICKUP_X, 이미 다른 로봇이 있으면 대기 슬롯(PICKUP_WAIT_X, WAIT2_X, ...)
+        중 앞에서부터 비어있는 첫 자리를 고른다. ROBOTS_PER_TYPE이 2대여서
+        슬롯이 하나뿐이면 이전과 동일하게 동작하고, 3대 이상으로 늘어나면
+        fleet_config의 PICKUP_WAIT_SLOTS도 자동으로 늘어나 있어 그대로 재사용된다."""
         pickup_node = PICKUP_NODE[shoe_type]
         if self.node_locks.get(pickup_node) is None:
             return pickup_node
-        return PICKUP_WAIT_NODE[shoe_type]
+        for slot in PICKUP_WAIT_SLOTS[shoe_type]:
+            if self.node_locks.get(slot) is None:
+                return slot
+        # 슬롯이 전부 점유 중이면 맨 뒤에서 대기시킨다 — 노드 락 시스템이 알아서
+        # 순서대로 통과시켜주므로 여기서 더 정교하게 고를 필요는 없다.
+        return PICKUP_WAIT_SLOTS[shoe_type][-1]
 
     def _report_amr_state(self, robot_id, code, desc=""):
         if not self.amr_state_client.service_is_ready():

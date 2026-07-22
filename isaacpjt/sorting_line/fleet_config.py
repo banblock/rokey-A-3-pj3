@@ -28,23 +28,40 @@ ROBOT_SHOE_TYPE = {
 
 # 신발 종류별 전용 픽업 지점 — 로봇은 자기 담당 종류의 픽업 지점에서만 신발을 받는다.
 PICKUP_NODE = {shoe_type: f"PICKUP_{shoe_type}" for shoe_type in SHOE_TYPES}
-# 배치를 다 끝낸 로봇이 PICKUP이 이미 점유돼 있을 때 대신 대기하는 지점(종류별 전용).
+# 배치를 다 끝낸 로봇이 PICKUP이 이미 점유돼 있을 때 대신 대기하는 지점(종류별 전용) —
+# 대기열의 맨 앞 슬롯. RackX_OUT→...→PICKUP_X 복귀 경로 구조상 ROBOTS_PER_TYPE이
+# 몇이든(1이어도) 항상 존재해야 하는 노드라 별도로 무조건 만든다.
 PICKUP_WAIT_NODE = {shoe_type: f"PICKUP_WAIT_{shoe_type}" for shoe_type in SHOE_TYPES}
+# ROBOTS_PER_TYPE이 3 이상일 때만 필요한 "추가" 대기 슬롯(WAIT2, WAIT3, ...) —
+# PICKUP_WAIT_X 뒤로 한 줄로 이어붙는다. 로봇 수가 2 이하면 빈 리스트.
+PICKUP_EXTRA_WAIT_NODES = {
+    shoe_type: [f"PICKUP_WAIT{k}_{shoe_type}" for k in range(2, ROBOTS_PER_TYPE)]
+    for shoe_type in SHOE_TYPES
+}
+# 타입별 대기 슬롯 전체(앞→뒤 순서) — 맨 앞이 PICKUP_WAIT_X. fms_node.py의
+# _pick_pickup_target()이 복귀할 로봇을 앞에서부터 순서대로 빈 슬롯에 배정할 때 쓴다.
+PICKUP_WAIT_SLOTS = {
+    shoe_type: [PICKUP_WAIT_NODE[shoe_type]] + PICKUP_EXTRA_WAIT_NODES[shoe_type]
+    for shoe_type in SHOE_TYPES
+}
 
-# 로봇은 기본적으로 자기 종류의 PICKUP_X에 가 있다가, 이미 파트너 로봇이 거기
-# 있으면 PICKUP_WAIT_X에서 대기한다 — 그래서 별도의 "홈 슬롯(WAIT_N)" 개념 자체가
-# 필요 없다. 예전엔 WAIT_N이라는 제3의 지점을 따로 두고 관리했는데, 결국 로봇이
-# 쉴 때 가는 곳은 PICKUP_X 아니면 PICKUP_WAIT_X뿐이라 중복이었다. 로봇 0번은
-# PICKUP_X, 1번(파트너)은 PICKUP_WAIT_X를 스폰 위치 겸 초기 홈으로 그대로
-# 재사용한다 — 초기 등록 시점에만 쓰이고, 이후 복귀 목적지는 항상
+# 로봇은 기본적으로 자기 종류의 PICKUP_X에 가 있다가, 이미 다른 로봇이 거기
+# 있으면 대기 슬롯(PICKUP_WAIT_X, WAIT2_X, ...)에서 대기한다 — 그래서 별도의
+# "홈 슬롯(WAIT_N)" 개념 자체가 필요 없다. 로봇 0번은 PICKUP_X, 그 뒤 로봇들은
+# 대기 슬롯을 앞에서부터 하나씩(1번→WAIT_X, 2번→WAIT2_X, ...) 스폰 위치 겸
+# 초기 홈으로 재사용한다 — 초기 등록 시점에만 쓰이고, 이후 복귀 목적지는 항상
 # fms_node.py의 _pick_pickup_target()이 그때그때 점유 상태를 보고 동적으로 정한다.
+# ROBOTS_PER_TYPE을 바꾸면 슬롯 개수(HOME_SLOTS)도 자동으로 맞춰 늘어나므로
+# ROBOTS_PER_TYPE 값 하나만 바꿔도 로봇 수 스케일링이 그대로 동작한다.
+HOME_SLOTS = {
+    shoe_type: [PICKUP_NODE[shoe_type]] + PICKUP_WAIT_SLOTS[shoe_type][: ROBOTS_PER_TYPE - 1]
+    for shoe_type in SHOE_TYPES
+}
 ROBOT_HOME_NODE = {}
 for _i, _robot_id in enumerate(ROBOT_SHOE_TYPE):
     _home_shoe_type = ROBOT_SHOE_TYPE[_robot_id]
     _within_type_idx = _i % ROBOTS_PER_TYPE
-    ROBOT_HOME_NODE[_robot_id] = (
-        PICKUP_NODE[_home_shoe_type] if _within_type_idx == 0 else PICKUP_WAIT_NODE[_home_shoe_type]
-    )
+    ROBOT_HOME_NODE[_robot_id] = HOME_SLOTS[_home_shoe_type][_within_type_idx]
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -134,19 +151,29 @@ NODE_GRAPH = {
     "RackD_OUT":     {"position": (11.25, 2.0, 0.0), "neighbors": [PICKUP_NODE["D"], PICKUP_WAIT_NODE["D"]]},
 }
 
-# 배치(5켤레) 작업을 전부 마친 로봇, 혹은 그냥 파트너에게 PICKUP_X를 양보해야
+# 배치(5켤레) 작업을 전부 마친 로봇, 혹은 그냥 다른 로봇에게 PICKUP_X를 양보해야
 # 하는 로봇이 대신 대기하는 지점(종류별 전용). PICKUP_X 바로 뒤(HUB 반대 방향)에
-# 배치했다 — 초기 스폰 위치로도 재사용된다(ROBOT_HOME_NODE 참고).
+# 한 줄로 늘어놓는다 — 초기 스폰 위치로도 재사용된다(ROBOT_HOME_NODE 참고).
+# WAIT_X(맨 앞)는 항상 만들고, WAIT2_X 이후는 ROBOTS_PER_TYPE이 3 이상일 때만
+# PICKUP_EXTRA_WAIT_NODES에 담겨 있으므로 자동으로 그만큼만 이어붙는다.
+_WAIT_SLOT_SPACING = 0.5  # 슬롯 간 Y 간격(스케일 전) — 기존 WAIT_X 오프셋 그대로 유지
 for _shoe_type in SHOE_TYPES:
     _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
     NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
-        "position": (_pickup_pos[0], -0.5, _pickup_pos[2]),
+        "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING, _pickup_pos[2]),
         "neighbors": [PICKUP_NODE[_shoe_type]],
     }
+    _prev_slot = PICKUP_WAIT_NODE[_shoe_type]
+    for _extra_idx, _extra_slot in enumerate(PICKUP_EXTRA_WAIT_NODES[_shoe_type]):
+        NODE_GRAPH[_extra_slot] = {
+            "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING * (_extra_idx + 2), _pickup_pos[2]),
+            "neighbors": [_prev_slot],
+        }
+        _prev_slot = _extra_slot
 
 # PICKUP_X → HUB_X 굴절점(종류별 하나) — HUB_X_APPROACH를 "HUB의 X, 픽업의 Y"로
 # 두면 HUB_APPROACH→HUB 구간(수직)이 HUB와 같은 X를 쓰는 근접 레인 랙 컬럼
-# (RackX_대/중/소, Y=6.25~8.75대)을 그대로 관통해버린다 — 대각선만 없앴지
+# (RackX_280/260/240, Y=6.25~8.75대)을 그대로 관통해버린다 — 대각선만 없앴지
 # "세로로 랙을 뚫고 지나가는" 문제가 남아있었다. 대신 "픽업의 X, HUB의 Y"로
 # 둬서: 픽업 자신의 전용 컬럼(다른 종류의 랙과 절대 안 겹치는 X)을 타고 랙
 # 꼭대기보다 높은 HUB의 Y까지 먼저 수직으로 올라간 다음, 랙 위쪽(랙 영역보다
