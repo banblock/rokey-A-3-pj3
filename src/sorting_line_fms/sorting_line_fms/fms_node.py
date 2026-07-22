@@ -166,7 +166,7 @@ class FleetManagementSystem(Node):
         # 이상 비전 쪽과 직접 통신하지 않는다. 서비스(ShoesList.srv)가 아니라
         # 토픽(PickupList.msg) 구독으로 받는다 — 메인 컨트롤이 응답을 기다릴
         # 필요 없이 계속 쌓아 보내고, FMS는 들어오는 대로 큐에 쌓기만 하면 된다.
-        self.create_subscription(PickupList, "/control/pickupup", self._on_pickup_list, 10)
+        self.create_subscription(PickupList, "/control/pickup", self._on_pickup_list, 10)
         # FMS → 메인 컨트롤 노드: 배치 작업 완료 / 교착 상태 발생 알림 (응답 불필요).
         self.amr_state_client = self.create_client(AmrState, "/control/amr_state")
         # "AMR이 PICKUP에 도착해 어떤 신발을 실어야 하는지" / "AMR이 저장소에

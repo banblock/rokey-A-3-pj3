@@ -4,7 +4,7 @@ FMS를 먼저 띄우고, 나머지는 약간 지연시켜서 시작한다 — �
 디스커버리가 끝나기 전에 Fleet Driver의 최초 상태 메시지가 FMS 구독 시작 전에
 나가서 유실될 수 있기 때문이다(실제로 겪었던 문제).
 
-작업 지시는 메인 컨트롤 노드가 FMS의 /fms/pickup_list(PickupList.msg) 토픽으로 발행해서 준다. 실제
+작업 지시는 메인 컨트롤 노드가 FMS의 /control/pickup(PickupList.msg) 토픽으로 발행해서 준다. 실제
 메인 컨트롤 노드가 아직 없으니, 그동안은 무작위 배치를 주기적으로 던져주는
 임시 스텁(main_control_stub)을 같이 띄운다 — 실제 노드가 생기면
 use_main_control_stub:=false로 끄거나 이 파일 자체를 launch에서 빼면 된다.
