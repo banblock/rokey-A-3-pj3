@@ -29,8 +29,9 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
-from sorting_line_interfaces.srv import AmrState, ShoesList
+from recycle_interfaces.srv import AmrState, ShoesList
 
 from fleet_config import (
     NODE_GRAPH,
@@ -59,16 +60,35 @@ SHOE_PLACEMENT_DWELL_SEC = 3.0  # 랙 목표 지점 도착 후 신발을 내려�
 # 2 = 교착(같은 위치가 반복, DEADLOCK_NOTIFY_THRESHOLD회 이상) — 둘 다 해당하면 각각 따로 보고된다.
 
 # 신발 길이(mm) → 크기 등급 경계값. 실측 후 조정 예정(현재는 자리표시용 플레이스홀더).
-SIZE_THRESHOLDS_MM = (255, 275)  # length < 255 → 소 | 255 ~ 275 → 중 | length > 275 → 대
+# 등급 라벨 자체를 실제 길이(mm) 문자열로 쓴다(280=대, 260=중, 240=소) — 노드
+# 이름(RackA_280 등)도 전부 이 값과 동일하게 맞춰뒀다.
+SIZE_THRESHOLDS_MM = (255, 275)  # length < 255 → 240 | 255 ~ 275 → 260 | length > 275 → 280
+
+# 선반 번호(0~11) — A280,A260,A240,B280,B260,B240,...,D280,D260,D240 순서로 고정 배정.
+# /fms/amr_carrying이 보내는 선반 번호가 바로 이 인덱스다. 근접/detour는 물리적으로
+# 같은 선반이라 detour 노드명("RackA_240_detour")도 접미사를 떼면 같은 인덱스를 가리킨다.
+_RACK_SIZES_IN_ORDER = ["280", "260", "240"]
+SHELF_INDEX = {
+    f"Rack{t}_{s}": i
+    for i, (t, s) in enumerate(
+        (t, s) for t in SHOE_TYPES for s in _RACK_SIZES_IN_ORDER
+    )
+}
+
+
+def _canonical_rack_node(node_id):
+    """detour 노드명("RackA_240_detour")도 근접 노드명("RackA_240")과 같은 선반을 가리키므로,
+    선반 번호를 찾기 전에 접미사를 떼어 정규화한다."""
+    return node_id[: -len("_detour")] if node_id.endswith("_detour") else node_id
 
 
 def _bucket_size(length_mm):
     low, high = SIZE_THRESHOLDS_MM
     if length_mm < low:
-        return "소"
+        return "240"
     if length_mm <= high:
-        return "중"
-    return "대"
+        return "260"
+    return "280"
 
 
 def _ccw(a, b, c):
@@ -111,6 +131,16 @@ class FleetManagementSystem(Node):
         # 로봇이 배치 대기(dwelling)를 마칠 때마다 하나씩 줄어든다. 0이 되는
         # 순간이 "이 종류의 배치가 전부 끝났다"는 뜻이다.
         self._pending_batch_count = {shoe_type: 0 for shoe_type in SHOE_TYPES}
+        # AMR이 PICKUP에 도착할 때마다 그 신발의 shoe_id를 순서대로 쌓아두는 큐 —
+        # /fms/amr_ready(Trigger)가 호출될 때마다 하나씩 꺼내 응답한다. Trigger는
+        # 요청에 아무 필드가 없어서 "어떤 로봇이냐"를 요청 쪽에서 지정할 수 없으므로,
+        # 도착한 순서대로 하나씩 내어주는 FIFO 큐로 처리한다.
+        self._ready_shoe_queue = []
+        # /fms/amr_carrying(Trigger)이 꺼내갈 큐 — AMR이 저장소(280/260/240)에
+        # 도착할 때마다 쌓인다. 선반별 누적 박스 수도 같이 추적한다(정규화된
+        # 노드명 기준 — 근접/detour는 같은 선반이므로 카운트를 공유해야 한다).
+        self._carrying_queue = []
+        self._shelf_box_count = {node: 0 for node in SHELF_INDEX}
 
         self.command_pub = self.create_publisher(String, "/fms/commands", 10)
         # 담당 종류의 로봇이 PICKUP에 도착해 신발을 받을 준비가 됐음을 시뮬레이션
@@ -128,6 +158,13 @@ class FleetManagementSystem(Node):
         self.create_service(ShoesList, "/fms/shoes_list", self._on_shoes_list)
         # FMS → 메인 컨트롤 노드: 배치 작업 완료 / 교착 상태 발생 알림 (응답 불필요).
         self.amr_state_client = self.create_client(AmrState, "/main_control/amr_state")
+        # 시뮬레이션 쪽에서 "AMR이 PICKUP에 도착했다 → 어떤 신발을 올려야 하는지"를
+        # 물어보는 서비스. std_srvs/Trigger라 요청엔 필드가 없고 응답도 success(bool)/
+        # message(string)뿐이라, 신발 번호(shoe_id)는 message에 문자열로 담아 보낸다.
+        self.create_service(Trigger, "/fms/amr_ready", self._on_amr_ready)
+        # 시뮬레이션 쪽에서 "AMR이 저장소(280/260/240)에 도착해 신발을 내려놓았다"를
+        # 물어보는 서비스 — /fms/amr_ready와 동일하게 Trigger + message에 JSON.
+        self.create_service(Trigger, "/fms/amr_carrying", self._on_amr_carrying)
 
         self.create_timer(0.5, self._dispatch_tick)
         self.get_logger().info(
@@ -223,8 +260,9 @@ class FleetManagementSystem(Node):
                     # 랙의 목표 지점에 도착 — 실제로 옮기지는 않지만, 신발을 내려놓는
                     # 가상의 시간만큼 여기 머무른다. 이 동안 이 노드(및 근접 통로의
                     # 경우 "대" 체크포인트를 이미 지나왔다면 그 지점)는 계속 락이
-                    # 걸려있어, 같은 랙으로 오는 다른 로봇이 근접/우회를 판단할 때
+                    # 걸려있어, 같은 랙으로 오는 다른 로봇이 근접/detour를 판단할 때
                     # 반영된다.
+                    self._publish_amr_carrying(robot_id, arrived_node)
                     robot["state"] = "dwelling"
                     robot["dwell_until"] = now + Duration(seconds=SHOE_PLACEMENT_DWELL_SEC)
                     robot["task"] = None
@@ -270,7 +308,7 @@ class FleetManagementSystem(Node):
 
         # 0.5) 배치 대기시간(dwelling) 처리 — 신발을 내려놓는 가상 시간이 지나면 복귀 시작.
         #      그 시간 동안은 도착 노드의 락이 계속 걸려있어, 같은 랙으로 오는 다른
-        #      로봇의 근접/우회 판단(_pick_rack_target)에 자연스럽게 반영된다.
+        #      로봇의 근접/detour 판단(_pick_rack_target)에 자연스럽게 반영된다.
         for robot_id, robot in self.robots.items():
             if robot["state"] != "dwelling" or robot["dwell_until"] is None:
                 continue
@@ -321,9 +359,9 @@ class FleetManagementSystem(Node):
                     break
 
                 task = queue[0]
-                # 근접 통로의 첫 번째 저장소(대)를 아직 아무도 지나지 않은 상태(=락이
+                # 근접 통로의 첫 번째 저장소(280)를 아직 아무도 지나지 않은 상태(=락이
                 # 비어있음)면 근접, 누가 아직 거기 있으면(이동 중이거나 배치 대기 중)
-                # 우회로 배정한다.
+                # detour로 배정한다.
                 actual_target = self._pick_rack_target(task["target_node"])
                 best_robot_id, best_path = None, None
                 for robot_id, robot in candidates:
@@ -376,22 +414,22 @@ class FleetManagementSystem(Node):
 
         next_node = robot["path"][next_idx]
 
-        # 근접 통로의 "대" 체크포인트로 들어가려는 참인데 이미 다른 로봇이 거기
-        # 있다면(태스크 배정 시점엔 비어있어서 근접으로 나왔지만, 그 사이 파트너가
-        # 먼저 들어온 경우) — 배정 당시 판단은 이미 낡았으니 무작정 기다리지 말고
-        # 지금(HUB 등에서) 우회로 즉시 재경로한다. _pick_rack_target은 배정 시점
-        # 스냅샷 판단이라 이동 중 상황 변화를 못 따라가는 게 근본 원인.
+        # 근접 통로의 "280"(대) 체크포인트로 들어가려는 참인데 이미 다른 로봇이
+        # 거기 있다면(태스크 배정 시점엔 비어있어서 근접으로 나왔지만, 그 사이
+        # 파트너가 먼저 들어온 경우) — 배정 당시 판단은 이미 낡았으니 무작정
+        # 기다리지 말고 지금(HUB 등에서) detour로 즉시 재경로한다. _pick_rack_target은
+        # 배정 시점 스냅샷 판단이라 이동 중 상황 변화를 못 따라가는 게 근본 원인.
         if (
-            next_node.startswith("Rack") and next_node.endswith("_대")
+            next_node.startswith("Rack") and next_node.endswith("_280")
             and self.node_locks.get(next_node) not in (None, robot_id)
             and robot["task"] is not None
-            and not robot["task"]["target_node"].endswith("_우회")
+            and not robot["task"]["target_node"].endswith("_detour")
         ):
-            detour_target = f"{robot['task']['target_node']}_우회"
+            detour_target = f"{robot['task']['target_node']}_detour"
             detour_path = shortest_path(robot["current_node"], detour_target)
             if detour_path is not None:
                 self.get_logger().info(
-                    f"[{robot_id}] {next_node} 점유 중 → 우회로 재경로 "
+                    f"[{robot_id}] {next_node} 점유 중 → detour로 재경로 "
                     f"({robot['task']['target_node']} → {detour_target})"
                 )
                 robot["task"]["target_node"] = detour_target
@@ -422,31 +460,31 @@ class FleetManagementSystem(Node):
         robot["state"] = "moving"
         robot["move_started_at"] = now
         robot["move_target"] = next_node
-        # "경로의 마지막 노드일 때만 정지"로 하면, 최종 목표가 RackA_소일 때
-        # RackA_대/RackA_중처럼 세분화 칸이 아닌 진짜 노드까지 감속 없이
-        # 통과해버린다(실제로 이 버그로 랙 대/중 위치에서 안 멈추는 문제가
+        # "경로의 마지막 노드일 때만 정지"로 하면, 최종 목표가 RackA_240일 때
+        # RackA_280/RackA_260처럼 세분화 칸이 아닌 진짜 노드까지 감속 없이
+        # 통과해버린다(실제로 이 버그로 랙 280/260 위치에서 안 멈추는 문제가
         # 있었다). 정지 여부는 "세분화로 생긴 가짜 칸인지"로 판단해야 한다 —
         # _subdivide_edge가 만드는 칸 이름은 항상 "__"(이중 언더스코어)를
-        # 포함하고, 실제 노드 이름(PICKUP_A, HUB_A, RackA_소_우회 등)은 전부
+        # 포함하고, 실제 노드 이름(PICKUP_A, HUB_A, RackA_240_detour 등)은 전부
         # 단일 언더스코어만 쓰므로 이 표시로 구분할 수 있다.
         is_final_hop = "__" not in next_node
         self._send_move_command(robot_id, next_node, is_final_hop)
         self._clear_deadlock_alert(robot_id, now)
 
     def _pick_rack_target(self, canonical_target):
-        """canonical_target(예: RackA_소)에 대해 근접/우회 중 실제로 쓸 노드를 고른다.
+        """canonical_target(예: RackA_240)에 대해 근접/detour 중 실제로 쓸 노드를 고른다.
 
-        근접 통로의 첫 번째 저장소(대)가 비어있으면(아직 아무도 안 왔거나, 이미 다
+        근접 통로의 첫 번째 저장소(280)가 비어있으면(아직 아무도 안 왔거나, 이미 다
         지나갔으면) 근접 그대로 쓴다. 누군가 아직 그 자리를 지나지 않았다면(이동
-        중이거나 배치 대기 중이라 락이 걸려있음) 우회 통로의 같은 사이즈 노드를
-        대신 돌려준다. 실제 목표가 무엇이든(소/중/대) 판단 기준은 항상 "대"
-        하나다 — 대→중→소 순서로만 진입하기 때문에 대가 뚫려있어야 그 뒤도 갈 수 있다.
+        중이거나 배치 대기 중이라 락이 걸려있음) detour 통로의 같은 사이즈 노드를
+        대신 돌려준다. 실제 목표가 무엇이든(240/260/280) 판단 기준은 항상 "280"
+        하나다 — 280→260→240 순서로만 진입하기 때문에 280이 뚫려있어야 그 뒤도 갈 수 있다.
         """
-        rack_prefix = canonical_target.split("_")[0]  # "RackA_소" → "RackA"
-        near_first_checkpoint = f"{rack_prefix}_대"
+        rack_prefix = canonical_target.split("_")[0]  # "RackA_240" → "RackA"
+        near_first_checkpoint = f"{rack_prefix}_280"
         if self.node_locks.get(near_first_checkpoint) is None:
             return canonical_target
-        return f"{canonical_target}_우회"
+        return f"{canonical_target}_detour"
 
     def _pick_pickup_target(self, shoe_type):
         """배치를 다 끝낸 로봇이 향할 곳 — 자기 종류 PICKUP_X가 비어있으면
@@ -513,10 +551,52 @@ class FleetManagementSystem(Node):
             "target_node": task["target_node"],
         })
         self.pickup_ready_pub.publish(msg)
+        # /fms/amr_ready(Trigger)가 꺼내갈 큐 — 여기서 말하는 "신발 번호"는
+        # ShoesList.srv의 shoes_num과 같은 종류 인덱스(A=0,B=1,C=2,D=3)이지
+        # task 내부의 순번(shoe_id)이 아니다. 도착한 AMR의 실제 번호(robot_id
+        # "amr_3" → 3, _report_amr_state와 동일한 방식)도 같이 묶어 보낸다.
+        self._ready_shoe_queue.append({
+            "amr_id": int(robot_id.split("_")[1]),
+            "shoes_num": SHOE_TYPES.index(robot["shoe_type"]),
+        })
         self.get_logger().info(
             f"[{robot_id}] PICKUP 도착 — 신발 수령 준비 완료 (shoe_type={robot['shoe_type']}, "
             f"shoe_id={task['shoe_id']})"
         )
+
+    def _on_amr_ready(self, request, response):
+        if self._ready_shoe_queue:
+            ready = self._ready_shoe_queue.pop(0)
+            response.success = True
+            response.message = json.dumps(ready)
+        else:
+            response.success = False
+            response.message = ""
+        return response
+
+    def _publish_amr_carrying(self, robot_id, arrived_node):
+        canonical_node = _canonical_rack_node(arrived_node)
+        shelf_num = SHELF_INDEX[canonical_node]
+        self._shelf_box_count[canonical_node] += 1
+        self._carrying_queue.append({
+            "amr_id": int(robot_id.split("_")[1]),
+            "shelf_num": shelf_num,
+            "box_count": self._shelf_box_count[canonical_node],
+        })
+        self.get_logger().info(
+            f"[{robot_id}] {arrived_node}(선반 {shelf_num}) 도착 — 누적 박스 수 "
+            f"{self._shelf_box_count[canonical_node]}"
+        )
+
+    def _on_amr_carrying(self, request, response):
+        if self._carrying_queue:
+            carrying = self._carrying_queue.pop(0)
+            response.success = True
+            response.message = json.dumps(carrying)
+        else:
+            response.success = False
+            response.message = ""
+        return response
 
     def _track_deadlock_alert(self, robot_id, next_node, holder_id, now, reason):
         entry = self._blocked_since.get(robot_id)

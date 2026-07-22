@@ -183,31 +183,21 @@ def _node_shoe_type(name):
     return None
 
 
-# USD 프림 경로/이름은 아스키 식별자만 허용한다 — 노드 이름에 들어간 한글
-# (소/중/대/우회)이 그대로 들어가면 프림 생성이 실패하므로 아스키로 치환한다.
-_KOREAN_TO_ASCII = {"소": "S", "중": "M", "대": "L", "우회": "Detour"}
-
-
-def _sanitize_prim_name(name):
-    safe = name
-    for korean, ascii_ in _KOREAN_TO_ASCII.items():
-        safe = safe.replace(korean, ascii_)
-    return safe
-
-
 for _node_name, _node_data in NODE_GRAPH.items():
     _node_type = _node_shoe_type(_node_name)
     _color = _ROBOT_TYPE_COLORS.get(_node_type, np.array([0.6, 0.6, 0.6]))  # 못 찾으면 회색(원래 없어야 함)
     _is_segment = "__" in _node_name
     _is_pickup_wait = any(_node_name.startswith(f"PICKUP_WAIT_{_t}") for _t in SHOE_TYPES)
-    _safe_name = _sanitize_prim_name(_node_name)
+    # 노드 이름이 전부 아스키(랙 사이즈는 240/260/280, 우회는 detour)라 USD 프림
+    # 이름으로 그대로 써도 된다 — 예전엔 한글(소/중/대/우회)이 섞여 있어서
+    # 별도 치환이 필요했지만 지금은 불필요.
     _size = 0.15 if _is_segment else 0.35
     _pos = list(_node_data["position"])
     _pos[2] = 0.01  # 바닥 위로 살짝 띄워서 그라운드 플레인과 Z-fighting 방지
     if _is_pickup_wait:
         marker = VisualCylinder(
-            prim_path=f"/World/GraphMarkers/{_safe_name}",
-            name=f"marker_{_safe_name}",
+            prim_path=f"/World/GraphMarkers/{_node_name}",
+            name=f"marker_{_node_name}",
             position=np.array(_pos),
             radius=_size / 2.0,
             height=0.02,
@@ -215,8 +205,8 @@ for _node_name, _node_data in NODE_GRAPH.items():
         )
     else:
         marker = VisualCuboid(
-            prim_path=f"/World/GraphMarkers/{_safe_name}",
-            name=f"marker_{_safe_name}",
+            prim_path=f"/World/GraphMarkers/{_node_name}",
+            name=f"marker_{_node_name}",
             position=np.array(_pos),
             scale=np.array([_size, _size, 0.02]),
             color=_color,
