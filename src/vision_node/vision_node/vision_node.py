@@ -126,22 +126,104 @@ class VisionNode(Node):
             self.captured_frames = {'cam1': None, 'cam2': None, 'cam3': None}
 
     # ------------------------------------------------------------------
+    # def _run_inspection(self, frames: dict):
+    #     image_msgs = [frames['cam1'], frames['cam2'], frames['cam3']]
+    #     left_result, right_result = self._infer_pair(image_msgs)
+    #     judgement = self._judge_pair(left_result, right_result)
+    #     self._publish_result(left_result, right_result, judgement)
+
     def _run_inspection(self, frames: dict):
-        image_msgs = [frames['cam1'], frames['cam2'], frames['cam3']]
-        left_result, right_result = self._infer_pair(image_msgs)
-        judgement = self._judge_pair(left_result, right_result)
-        self._publish_result(left_result, right_result, judgement)
+        image_msgs = [frames['cam1'], frames['cam2']]
+        # frames['cam3']]
+        result = self._infer_pair(image_msgs)
+        judgement = self._judge_pair(result)
+        self._publish_result(result, judgement)
 
     # ------------------------------------------------------------------
+    # def _infer_pair(self, image_msgs: list):
+    #     left_class_votes = {}
+    #     right_class_votes = {}
+    #     left_has_stain = False
+    #     right_has_stain = False
+    #     left_has_tear = False
+    #     right_has_tear = False
+    #     left_best_conf = 0.0
+    #     right_best_conf = 0.0
+
+    #     for msg in image_msgs:
+    #         if msg is None:
+    #             continue
+    #         try:
+    #             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+    #         except Exception as e:
+    #             self.get_logger().warn(f'CV bridge failed: {e}')
+    #             continue
+
+    #         dets = self._run_inference(cv_image)
+
+    #         left_shoe = self._best_shoe_det(dets, side='left')
+    #         right_shoe = self._best_shoe_det(dets, side='right')
+
+    #         self.get_logger().info(
+    #             f"[DEBUG] left_shoe={left_shoe}, right_shoe={right_shoe}, "
+    #             f"total_dets={len(dets)}, det_classes={[d['class_name'] for d in dets]}"
+    #         )
+
+    #         if left_shoe:
+    #             key = f"{left_shoe['color']}_{left_shoe['size']}"
+    #             left_class_votes[key] = left_class_votes.get(key, 0) + left_shoe['confidence']
+    #             left_best_conf = max(left_best_conf, left_shoe['confidence'])
+
+    #         if right_shoe:
+    #             key = f"{right_shoe['color']}_{right_shoe['size']}"
+    #             right_class_votes[key] = right_class_votes.get(key, 0) + right_shoe['confidence']
+    #             right_best_conf = max(right_best_conf, right_shoe['confidence'])
+
+    #         for d in dets:
+    #             if d['class_name'] not in ('stain', 'tear'):
+    #                 continue
+    #             if d['confidence'] < CONF_THRESHOLD_DEFECT:
+    #                 continue
+
+    #             side = self._assign_defect_side(d['bbox'], left_shoe, right_shoe)
+    #             if side == 'left':
+    #                 if d['class_name'] == 'stain':
+    #                     left_has_stain = True
+    #                 else:
+    #                     left_has_tear = True
+    #             elif side == 'right':
+    #                 if d['class_name'] == 'stain':
+    #                     right_has_stain = True
+    #                 else:
+    #                     right_has_tear = True
+    #             else:
+    #                 self.get_logger().warn(
+    #                     f"Defect '{d['class_name']}' detected but couldn't assign to a shoe side"
+    #                 )
+
+    #     left_key = max(left_class_votes, key=left_class_votes.get) if left_class_votes else None
+    #     right_key = max(right_class_votes, key=right_class_votes.get) if right_class_votes else None
+
+    #     left_color, left_size = left_key.split('_') if left_key else (None, 0)
+    #     right_color, right_size = right_key.split('_') if right_key else (None, 0)
+
+    #     left_result = {
+    #         'color': left_color, 'size': int(left_size) if left_size else 0,
+    #         'has_stain': left_has_stain, 'has_tear': left_has_tear,
+    #         'confidence': left_best_conf,
+    #     }
+    #     right_result = {
+    #         'color': right_color, 'size': int(right_size) if right_size else 0,
+    #         'has_stain': right_has_stain, 'has_tear': right_has_tear,
+    #         'confidence': right_best_conf,
+    #     }
+    #     return left_result, right_result
+
     def _infer_pair(self, image_msgs: list):
-        left_class_votes = {}
-        right_class_votes = {}
-        left_has_stain = False
-        right_has_stain = False
-        left_has_tear = False
-        right_has_tear = False
-        left_best_conf = 0.0
-        right_best_conf = 0.0
+    # """켤레(sneakers_0) 하나로 탐지, tear는 그 박스와 겹치는지로 판단."""
+        shoe_found = False
+        shoe_best_conf = 0.0
+        has_tear = False
 
         for msg in image_msgs:
             if msg is None:
@@ -154,80 +236,68 @@ class VisionNode(Node):
 
             dets = self._run_inference(cv_image)
 
-            left_shoe = self._best_shoe_det(dets, side='left')
-            right_shoe = self._best_shoe_det(dets, side='right')
+            shoe_pair = self._best_shoe_pair_det(dets)
 
             self.get_logger().info(
-                f"[DEBUG] left_shoe={left_shoe}, right_shoe={right_shoe}, "
+                f"[DEBUG] shoe_pair={shoe_pair}, "
                 f"total_dets={len(dets)}, det_classes={[d['class_name'] for d in dets]}"
             )
 
-            if left_shoe:
-                key = f"{left_shoe['color']}_{left_shoe['size']}"
-                left_class_votes[key] = left_class_votes.get(key, 0) + left_shoe['confidence']
-                left_best_conf = max(left_best_conf, left_shoe['confidence'])
-
-            if right_shoe:
-                key = f"{right_shoe['color']}_{right_shoe['size']}"
-                right_class_votes[key] = right_class_votes.get(key, 0) + right_shoe['confidence']
-                right_best_conf = max(right_best_conf, right_shoe['confidence'])
+            if shoe_pair:
+                shoe_found = True
+                shoe_best_conf = max(shoe_best_conf, shoe_pair['confidence'])
 
             for d in dets:
-                if d['class_name'] not in ('stain', 'tear'):
+                if d['class_name'] != 'tear':
                     continue
                 if d['confidence'] < CONF_THRESHOLD_DEFECT:
                     continue
 
-                side = self._assign_defect_side(d['bbox'], left_shoe, right_shoe)
-                if side == 'left':
-                    if d['class_name'] == 'stain':
-                        left_has_stain = True
+                if shoe_pair is not None:
+                    overlap = self._bbox_intersection_area(d['bbox'], shoe_pair['bbox']) / self._bbox_area(d['bbox'])
+                    if overlap >= DEFECT_OVERLAP_THRESHOLD:
+                        has_tear = True
                     else:
-                        left_has_tear = True
-                elif side == 'right':
-                    if d['class_name'] == 'stain':
-                        right_has_stain = True
-                    else:
-                        right_has_tear = True
+                        self.get_logger().warn("tear detected but doesn't overlap with shoe pair bbox")
                 else:
-                    self.get_logger().warn(
-                        f"Defect '{d['class_name']}' detected but couldn't assign to a shoe side"
-                    )
+                    self.get_logger().warn("tear detected but no shoe pair found in this frame")
 
-        left_key = max(left_class_votes, key=left_class_votes.get) if left_class_votes else None
-        right_key = max(right_class_votes, key=right_class_votes.get) if right_class_votes else None
-
-        left_color, left_size = left_key.split('_') if left_key else (None, 0)
-        right_color, right_size = right_key.split('_') if right_key else (None, 0)
-
-        left_result = {
-            'color': left_color, 'size': int(left_size) if left_size else 0,
-            'has_stain': left_has_stain, 'has_tear': left_has_tear,
-            'confidence': left_best_conf,
+        result = {
+            'shoe_found': shoe_found,
+            'has_tear': has_tear,
+            'confidence': shoe_best_conf,
         }
-        right_result = {
-            'color': right_color, 'size': int(right_size) if right_size else 0,
-            'has_stain': right_has_stain, 'has_tear': right_has_tear,
-            'confidence': right_best_conf,
-        }
-        return left_result, right_result
+        return result
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _best_shoe_det(dets: list, side: str):
-        candidates = [
-            d for d in dets
-            if d['class_name'].startswith('sneaker_') and f'_{side}_' in d['class_name']
-        ]
+    # def _best_shoe_det(dets: list, side: str):
+    #     candidates = [
+    #         d for d in dets
+    #         if d['class_name'].startswith('sneaker_') and f'_{side}_' in d['class_name']
+    #     ]
+    #     if not candidates:
+    #         return None
+
+    #     best = max(candidates, key=lambda d: d['confidence'])
+    #     parts = best['class_name'].split('_')
+    #     return {
+    #         'color': parts[1],
+    #         'side': parts[2],
+    #         'size': parts[3],
+    #         'confidence': best['confidence'],
+    #         'bbox': best['bbox'],
+    #     }
+
+    @staticmethod
+    def _best_shoe_pair_det(dets: list):
+        """sneakers_0(켤레 전체) 중 confidence 가장 높은 것 하나."""
+        candidates = [d for d in dets if d['class_name'] == 'sneakers_0']
         if not candidates:
             return None
 
         best = max(candidates, key=lambda d: d['confidence'])
-        parts = best['class_name'].split('_')
         return {
-            'color': parts[1],
-            'side': parts[2],
-            'size': parts[3],
             'confidence': best['confidence'],
             'bbox': best['bbox'],
         }
@@ -247,23 +317,23 @@ class VisionNode(Node):
         x1, y1, x2, y2 = box
         return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
-    def _assign_defect_side(self, defect_bbox, left_shoe, right_shoe):
-        defect_area = self._bbox_area(defect_bbox)
-        if defect_area == 0:
-            return None
+    # def _assign_defect_side(self, defect_bbox, left_shoe, right_shoe):
+    #     defect_area = self._bbox_area(defect_bbox)
+    #     if defect_area == 0:
+    #         return None
 
-        left_overlap = 0.0
-        right_overlap = 0.0
+    #     left_overlap = 0.0
+    #     right_overlap = 0.0
 
-        if left_shoe:
-            left_overlap = self._bbox_intersection_area(defect_bbox, left_shoe['bbox']) / defect_area
-        if right_shoe:
-            right_overlap = self._bbox_intersection_area(defect_bbox, right_shoe['bbox']) / defect_area
+    #     if left_shoe:
+    #         left_overlap = self._bbox_intersection_area(defect_bbox, left_shoe['bbox']) / defect_area
+    #     if right_shoe:
+    #         right_overlap = self._bbox_intersection_area(defect_bbox, right_shoe['bbox']) / defect_area
 
-        if left_overlap < DEFECT_OVERLAP_THRESHOLD and right_overlap < DEFECT_OVERLAP_THRESHOLD:
-            return None
+    #     if left_overlap < DEFECT_OVERLAP_THRESHOLD and right_overlap < DEFECT_OVERLAP_THRESHOLD:
+    #         return None
 
-        return 'left' if left_overlap >= right_overlap else 'right'
+    #     return 'left' if left_overlap >= right_overlap else 'right'
 
     def _run_inference(self, image: np.ndarray) -> list:
         if self.model is None:
@@ -331,27 +401,40 @@ class VisionNode(Node):
 
     #     return {'discard': False}
 
-    def _judge_pair(self, left: dict, right: dict) -> dict:
-        discard = False
+    # def _judge_pair(self, left: dict, right: dict) -> dict:
+    #     discard = False
 
-        if left['has_tear'] or right['has_tear']:
-            discard = True
-        elif left['has_stain'] or right['has_stain']:
-            discard = True
-        elif left['color'] is None or right['color'] is None:
-            discard = True
-        elif left['color'] != right['color']:
-            discard = True
-        elif left['size'] == 0 or right['size'] == 0:
-            discard = True
-        elif left['size'] != right['size']:
-            discard = True
+    #     if left['has_tear'] or right['has_tear']:
+    #         discard = True
+    #     elif left['has_stain'] or right['has_stain']:
+    #         discard = True
+    #     elif left['color'] is None or right['color'] is None:
+    #         discard = True
+    #     elif left['color'] != right['color']:
+    #         discard = True
+    #     elif left['size'] == 0 or right['size'] == 0:
+    #         discard = True
+    #     elif left['size'] != right['size']:
+    #         discard = True
 
-        color_str = left['color'] or right['color']
-        color_int = COLOR_TO_INT.get(color_str, -1)
-        size = left['size'] if left['size'] else right['size']
+    #     color_str = left['color'] or right['color']
+    #     color_int = COLOR_TO_INT.get(color_str, -1)
+    #     size = left['size'] if left['size'] else right['size']
 
-        return {'discard': discard, 'color': color_int, 'size': size}
+    #     return {'discard': discard, 'color': color_int, 'size': size}
+
+def _judge_pair(self, result: dict) -> dict:
+    """
+    TODO: 색상 일치 판정(OpenCV 픽셀 카운팅)은 추후 추가.
+    지금은 신발 감지 여부 + tear 유무만으로 판정.
+    """
+    if not result['shoe_found']:
+        return {'discard': True, 'reason': 'no_shoe_detected'}
+
+    if result['has_tear']:
+        return {'discard': True, 'reason': 'defect_tear'}
+
+    return {'discard': False, 'reason': 'ok'}
 
     # ------------------------------------------------------------------
     # 결과 발행
@@ -372,16 +455,27 @@ class VisionNode(Node):
     #         f"R=(color={right['color']}, size={right['size']})"
     #     )
 
-    def _publish_result(self, left: dict, right: dict, judgement: dict):
+    # def _publish_result(self, left: dict, right: dict, judgement: dict):
+    #     msg = ShoeInspectionResult()
+    #     msg.discard = judgement['discard']
+    #     msg.color = judgement['color']
+    #     msg.size = judgement['size']
+    #     self.pub_result.publish(msg)
+
+    #     self.get_logger().info(
+    #         f"[RESULT] discard={judgement['discard']}, "
+    #         f"color={judgement['color']}, size={judgement['size']}"
+    #     )
+
+    def _publish_result(self, result: dict, judgement: dict):
         msg = ShoeInspectionResult()
         msg.discard = judgement['discard']
-        msg.color = judgement['color']
-        msg.size = judgement['size']
+        msg.color = 0  # TODO: OpenCV 색상 판정 추가 후 채울 것
+        msg.size = 240    # TODO: cam3 seg 기반 사이즈 측정 추가 후 채울 것
         self.pub_result.publish(msg)
 
         self.get_logger().info(
-            f"[RESULT] discard={judgement['discard']}, "
-            f"color={judgement['color']}, size={judgement['size']}"
+            f"[RESULT] discard={judgement['discard']}, reason={judgement['reason']}"
         )
 
 
