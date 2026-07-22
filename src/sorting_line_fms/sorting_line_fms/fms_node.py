@@ -55,7 +55,7 @@ MOVE_TIMEOUT_SEC = 60.0  # 이동 명령 후 이만큼 지나도 arrived가 없�
 DEADLOCK_ALERT_SEC = 5.0  # 다른 로봇이 다음 노드를 점유해 이만큼 계속 못 넘어가면 일단 "감지"로 보고
 DEADLOCK_UNRECOVERED_SEC = 25.0  # 감지 이후에도 이만큼 더 못 풀리면 "복구 실패"로 보고 위치별 카운트를 올림
 DEADLOCK_NOTIFY_THRESHOLD = 3  # 같은 위치(node) 또는 같은 로봇에서 "복구 실패"가 이 횟수 이상 반복돼야 메인 컨트롤 노드에 알림
-SHOE_PLACEMENT_DWELL_SEC = 3.0  # 랙 목표 지점 도착 후 신발을 내려놓는 가상 대기시간(임시값, 조절 가능)
+SHOE_PLACEMENT_DWELL_SEC = 1.0  # 랙 목표 지점 도착 후 신발을 내려놓는 가상 대기시간(임시값, 조절 가능)
 
 # AMR 준비/적재 이벤트(/fms/amr_ready, /fms/amr_carrying)용 QoS — 시뮬레이션과
 # 유선으로 분리된 별도 컴퓨터에서 통신하고, 그 컴퓨터는 YOLO 추론까지 같이
@@ -342,7 +342,17 @@ class FleetManagementSystem(Node):
                 # 로봇이 근접 슬롯을 떠나면서 락이 풀렸을 수도 있고, 그 사이
                 # 다른 로봇이 들어왔을 수도 있어서다.
                 next_task = robot["tasks"][0]
-                actual_target = self._pick_rack_target(next_task["target_node"], robot_id)
+                if arrived_node.endswith("_detour"):
+                    # 이미 detour(우회) 레인 안에 들어와 있다 — detour와 근접(near)
+                    # 레인은 입구(HUB)에서만 갈라질 뿐 랙 진입 후에는 서로 이어져
+                    # 있지 않아서, 여기서 근접으로 "되돌아가려" 하면 shortest_path가
+                    # 이 레인 끝(RackX_OUT)까지 다 지나 픽업/허브를 한 바퀴 돌아
+                    # 재진입하는 경로를 돌려준다 — 실제로 로봇이 detour 260/240을
+                    # 그냥 지나쳐서 크게 우회하는 문제가 있었다. _pick_rack_target로
+                    # 재판단하지 않고, 이번 트립 동안은 detour 레인에 그대로 남는다.
+                    actual_target = f"{next_task['target_node']}_detour"
+                else:
+                    actual_target = self._pick_rack_target(next_task["target_node"], robot_id)
                 next_task["target_node"] = actual_target
 
                 if actual_target == arrived_node:
