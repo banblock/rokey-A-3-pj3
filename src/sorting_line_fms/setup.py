@@ -21,7 +21,6 @@ setup(
         # 공유)로 fleet_config.py와 나란히 설치한다 — edge_conflict 테스트 전용
         # 그래프(crossing_test_fms.py, fleet_driver.py --ros-args -p config_module:=
         # crossing_test_config 로 사용).
-        ('share/' + package_name, ['../../isaacpjt/sorting_line/crossing_test_config.py']),
         # fleet_config_test1.py — 신발 종류 1개(A)만 남긴 최소 테스트용 그래프.
         # fms_node.py가 지금 이걸 import해서 쓰므로 반드시 같이 설치해야 한다.
         ('share/' + package_name, ['../../isaacpjt/sorting_line/fleet_config_test1.py']),
@@ -43,7 +42,6 @@ setup(
             'fms_node = sorting_line_fms.fms_node:main',
             'fleet_driver = sorting_line_fms.fleet_driver:main',
             'main_control_stub = sorting_line_fms.main_control_stub:main',
-            'crossing_test_fms = sorting_line_fms.crossing_test_fms:main',
         ],
     },
 )
