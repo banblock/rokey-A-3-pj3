@@ -1,10 +1,7 @@
-string left_class
+bool discard
+
+string left_color
 int32 left_size
-bool left_has_stain
-bool left_has_tear
-string right_class
+
+string right_color
 int32 right_size
-bool right_has_stain
-bool right_has_tear
-bool accepted
-string reason

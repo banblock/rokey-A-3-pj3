@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>sorting_line_interfaces</name>
+  <name>recycle_interfaces</name>
   <version>0.0.0</version>
   <description>FMS ↔ 메인 컨트롤 노드 간 커스텀 서비스 정의 (ShoesList, AmrState)</description>
   <maintainer email="junh001224@gmail.com">rokey</maintainer>

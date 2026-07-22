@@ -11,12 +11,12 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import numpy as np
 
-from sorting_line_interfaces.srv import InspectShoePair
-from sorting_line_interfaces.msg import ShoeInspectionResult
+from recycle_interfaces.srv import InspectShoePair
+from recycle_interfaces.msg import ShoeInspectionResult
 
 
-CONF_THRESHOLD_SHOE = 0.6
-CONF_THRESHOLD_DEFECT = 0.4
+CONF_THRESHOLD_SHOE = 0.4
+CONF_THRESHOLD_DEFECT = 0.2
 CONF_THRESHOLD_MIN = min(CONF_THRESHOLD_SHOE, CONF_THRESHOLD_DEFECT)
 DEFECT_OVERLAP_THRESHOLD = 0.3
 
@@ -26,7 +26,7 @@ class VisionNode(Node):
     def __init__(self):
         super().__init__('vision_node')
 
-        self.declare_parameter('model_path', '/home/rokey/doosan_pjt3/data_gen/output_v2/runs/shoe_seg_v2/weights/best.pt')
+        self.declare_parameter('model_path', '/home/rokey/cobot3_ws/src/vision_node/resource/best.pt')
         self.declare_parameter('image_size', 640)
 
         self.model_path = self.get_parameter('model_path').value
@@ -267,14 +267,14 @@ class VisionNode(Node):
 
         results = self.model.predict(
             image, conf=CONF_THRESHOLD_MIN, imgsz=self.img_size,
-            iou=0.5,  # NMS IoU 임계값 명시
+            # iou=0.5,  # NMS IoU 임계값 명시
             verbose=False,
         )
 
         import cv2
         import time
         annotated = results[0].plot()
-        debug_path = f'/tmp/debug_inference_{time.time()}.png'
+        debug_path = f'/home/rokey/debug_inference/debug_inference_{time.time()}.png'
         cv2.imwrite(debug_path, annotated)
 
         dets = []
@@ -302,24 +302,30 @@ class VisionNode(Node):
     # ------------------------------------------------------------------
     def _judge_pair(self, left: dict, right: dict) -> dict:
         if left['has_tear'] or right['has_tear']:
-            return {'accepted': False, 'reason': 'defect_tear'}
+            self.get_logger().info('Discard reason: defect_tear')
+            return {'discard': True}
 
         if left['has_stain'] or right['has_stain']:
-            return {'accepted': False, 'reason': 'defect_stain'}
+            self.get_logger().info('Discard reason: defect_stain')
+            return {'discard': True}
 
         if left['color'] is None or right['color'] is None:
-            return {'accepted': False, 'reason': 'incomplete_pair'}
+            self.get_logger().info('Discard reason: incomplete_pair')
+            return {'discard': True}
 
         if left['color'] != right['color']:
-            return {'accepted': False, 'reason': 'mismatch_class'}
+            self.get_logger().info('Discard reason: mismatch_class')
+            return {'discard': True}
 
         if left['size'] == 0 or right['size'] == 0:
-            return {'accepted': False, 'reason': 'incomplete_pair'}
+            self.get_logger().info('Discard reason: incomplete_pair (size)')
+            return {'discard': True}
 
         if left['size'] != right['size']:
-            return {'accepted': False, 'reason': 'mismatch_size'}
+            self.get_logger().info('Discard reason: mismatch_size')
+            return {'discard': True}
 
-        return {'accepted': True, 'reason': 'ok'}
+        return {'discard': False}
 
     # ------------------------------------------------------------------
     # 결과 발행
@@ -327,24 +333,17 @@ class VisionNode(Node):
 
     def _publish_result(self, left: dict, right: dict, judgement: dict):
         msg = ShoeInspectionResult()
-        msg.left_class = left['color'] or ''
+        msg.discard = judgement['discard']
+        msg.left_color = left['color'] or ''
         msg.left_size = left['size']
-        msg.left_has_stain = left['has_stain']
-        msg.left_has_tear = left['has_tear']
-        msg.right_class = right['color'] or ''
+        msg.right_color = right['color'] or ''
         msg.right_size = right['size']
-        msg.right_has_stain = right['has_stain']
-        msg.right_has_tear = right['has_tear']
-        msg.accepted = judgement['accepted']
-        msg.reason = judgement['reason']
         self.pub_result.publish(msg)
 
         self.get_logger().info(
-            f"[RESULT] accepted={judgement['accepted']}, reason={judgement['reason']}, "
-            f"L=(color={left['color']}, size={left['size']}, "
-            f"stain={left['has_stain']}, tear={left['has_tear']}), "
-            f"R=(color={right['color']}, size={right['size']}, "
-            f"stain={right['has_stain']}, tear={right['has_tear']})"
+            f"[RESULT] discard={judgement['discard']}, "
+            f"L=(color={left['color']}, size={left['size']}), "
+            f"R=(color={right['color']}, size={right['size']})"
         )
 
 
