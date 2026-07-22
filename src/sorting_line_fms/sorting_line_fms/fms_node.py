@@ -34,7 +34,7 @@ from std_msgs.msg import String
 from recycle_interfaces.msg import PickupList
 from recycle_interfaces.srv import AmrState
 
-from fleet_config import (
+from fleet_config_test1 import (
     NODE_GRAPH,
     PICKUP_NODE,
     PICKUP_WAIT_SLOTS,
@@ -269,12 +269,6 @@ class FleetManagementSystem(Node):
             robot["move_started_at"] = None
             robot["move_target"] = None
 
-            # PICKUP은 모든 태스크 경로가 반드시 거쳐가는 지점이라, 살아있는
-            # 배치를 든 채 여기 도착했다는 건 "이 로봇이 받아야 할 신발들 앞에
-            # 섰다"는 뜻이다 — 이 순간 시뮬레이션 쪽에 신발 전달 준비 완료를 알린다.
-            if arrived_node == PICKUP_NODE.get(robot["shoe_type"]) and robot["tasks"]:
-                self._publish_amr_ready(robot_id, robot)
-
             if robot["path_idx"] >= len(robot["path"]) - 1:
                 # 목적지 도착 완료
                 if robot["tasks"]:
@@ -473,6 +467,14 @@ class FleetManagementSystem(Node):
                     f"[{best_robot_id}] 트립 시작(신발 {len(batch)}개, 목표 순서 "
                     f"{[t['target_node'] for t in batch]}): {' → '.join(best_path)}"
                 )
+                # 예전엔 로봇이 실제로 PICKUP_X 노드에 "도착"하는 이벤트를 기준으로
+                # amr_ready를 보냈는데, 홈 슬롯이 PICKUP_X 자체인 로봇(종류별 1번
+                # 로봇)은 트립을 그 자리에서 바로 시작해버려서 "도착" 이벤트 자체가
+                # 안 생기는 경우가 있었다 — 그러면 amr_ready가 영영 안 나간다. FMS가
+                # 이 트립의 이동 명령을 로봇에게 실제로 내리는(=배정을 확정하는)
+                # 지금 이 시점에 보내는 걸로 바꿔서, 홈 슬롯이 어디든 상관없이
+                # 트립이 시작되면 항상 한 번은 보내지도록 한다.
+                self._publish_amr_ready(best_robot_id, robot)
 
         # 2) 다음 홉 이동 시도 (노드 예약제/Mutex 핵심 로직)
         #    매 tick마다 순회 시작 로봇을 한 칸씩 돌려서, 특정 로봇이 계속 우선권을
