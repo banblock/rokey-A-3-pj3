@@ -8,15 +8,15 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from sensor_msgs.msg import Image
+from std_msgs.msg import Bool
 from cv_bridge import CvBridge
 import numpy as np
 
-from recycle_interfaces.srv import InspectShoePair
 from recycle_interfaces.msg import ShoeInspectionResult
 
 
-CONF_THRESHOLD_SHOE = 0.1
-CONF_THRESHOLD_DEFECT = 0.1
+CONF_THRESHOLD_SHOE = 0.5
+CONF_THRESHOLD_DEFECT = 0.2
 CONF_THRESHOLD_MIN = min(CONF_THRESHOLD_SHOE, CONF_THRESHOLD_DEFECT)
 DEFECT_OVERLAP_THRESHOLD = 0.3
 
@@ -62,10 +62,15 @@ class VisionNode(Node):
         )
 
         # ---- 검사 요청 서비스 서버 ----
-        self.srv_trigger = self.create_service(
-            InspectShoePair,
-            '/vision/inspect_shoe_pair',
-            self.trigger_callback,
+        # self.srv_trigger = self.create_service(
+        #     InspectShoePair,
+        #     '/vision/inspect_shoe_pair',
+        #     self.trigger_callback,
+        # )
+
+        self.sub_trigger = self.create_subscription(
+            Bool, '/sim/inspect_shoe_pair',
+            lambda msg: self.trigger_callback(msg), 10,
         )
 
         # ---- 결과 발행자 (DB 노드로) ----
@@ -90,21 +95,18 @@ class VisionNode(Node):
     # 트리거 콜백 (서비스)
     # ------------------------------------------------------------------
 
-    def trigger_callback(self, request, response):
+    def trigger_callback(self, msg):
         """검사 요청 수신 (서비스). 이 시점부터 들어오는 카메라 프레임을 캡처 대상으로 삼는다."""
-        if self.inspect_requested:
-            self.get_logger().warn('Inspection already in progress, rejecting duplicate request')
-            response.accepted_request = False
-            response.status = 'busy'
-            return response
-
+        if msg.data is False:
+            self.get_logger().info('Inspection request canceled')
+            self.inspect_requested = False
+            self.captured_frames = {'cam1': None, 'cam2': None, 'cam3': None}
+            return
         self.get_logger().info('Inspection triggered')
         self.captured_frames = {'cam1': None, 'cam2': None, 'cam3': None}
         self.inspect_requested = True
 
-        response.accepted_request = True
-        response.status = 'started'
-        return response
+        return
 
     # ------------------------------------------------------------------
     # 카메라 콜백 (3개)
@@ -330,27 +332,26 @@ class VisionNode(Node):
     #     return {'discard': False}
 
     def _judge_pair(self, left: dict, right: dict) -> dict:
-    """짝 검사는 내부적으로 그대로 수행. discard 여부 + 대표 color/size만 반환."""
-    discard = False
+        discard = False
 
-    if left['has_tear'] or right['has_tear']:
-        discard = True
-    elif left['has_stain'] or right['has_stain']:
-        discard = True
-    elif left['color'] is None or right['color'] is None:
-        discard = True
-    elif left['color'] != right['color']:
-        discard = True
-    elif left['size'] == 0 or right['size'] == 0:
-        discard = True
-    elif left['size'] != right['size']:
-        discard = True
+        if left['has_tear'] or right['has_tear']:
+            discard = True
+        elif left['has_stain'] or right['has_stain']:
+            discard = True
+        elif left['color'] is None or right['color'] is None:
+            discard = True
+        elif left['color'] != right['color']:
+            discard = True
+        elif left['size'] == 0 or right['size'] == 0:
+            discard = True
+        elif left['size'] != right['size']:
+            discard = True
 
-    color_str = left['color'] or right['color']
-    color_int = COLOR_TO_INT.get(color_str, -1)
-    size = left['size'] if left['size'] else right['size']
+        color_str = left['color'] or right['color']
+        color_int = COLOR_TO_INT.get(color_str, -1)
+        size = left['size'] if left['size'] else right['size']
 
-    return {'discard': discard, 'color': color_int, 'size': size}
+        return {'discard': discard, 'color': color_int, 'size': size}
 
     # ------------------------------------------------------------------
     # 결과 발행
@@ -372,16 +373,16 @@ class VisionNode(Node):
     #     )
 
     def _publish_result(self, left: dict, right: dict, judgement: dict):
-    msg = ShoeInspectionResult()
-    msg.discard = judgement['discard']
-    msg.color = judgement['color']
-    msg.size = judgement['size']
-    self.pub_result.publish(msg)
+        msg = ShoeInspectionResult()
+        msg.discard = judgement['discard']
+        msg.color = judgement['color']
+        msg.size = judgement['size']
+        self.pub_result.publish(msg)
 
-    self.get_logger().info(
-        f"[RESULT] discard={judgement['discard']}, "
-        f"color={judgement['color']}, size={judgement['size']}"
-    )
+        self.get_logger().info(
+            f"[RESULT] discard={judgement['discard']}, "
+            f"color={judgement['color']}, size={judgement['size']}"
+        )
 
 
 def main(args=None):
