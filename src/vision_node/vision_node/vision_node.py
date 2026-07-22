@@ -15,10 +15,12 @@ from recycle_interfaces.srv import InspectShoePair
 from recycle_interfaces.msg import ShoeInspectionResult
 
 
-CONF_THRESHOLD_SHOE = 0.4
-CONF_THRESHOLD_DEFECT = 0.2
+CONF_THRESHOLD_SHOE = 0.1
+CONF_THRESHOLD_DEFECT = 0.1
 CONF_THRESHOLD_MIN = min(CONF_THRESHOLD_SHOE, CONF_THRESHOLD_DEFECT)
 DEFECT_OVERLAP_THRESHOLD = 0.3
+
+COLOR_TO_INT = {'red': 0, 'green': 1, 'yellow': 2}
 
 
 class VisionNode(Node):
@@ -267,7 +269,7 @@ class VisionNode(Node):
 
         results = self.model.predict(
             image, conf=CONF_THRESHOLD_MIN, imgsz=self.img_size,
-            # iou=0.5,  # NMS IoU 임계값 명시
+            iou=0.5,  # NMS IoU 임계값 명시
             verbose=False,
         )
 
@@ -300,51 +302,86 @@ class VisionNode(Node):
         return dets
 
     # ------------------------------------------------------------------
+    # def _judge_pair(self, left: dict, right: dict) -> dict:
+    #     if left['has_tear'] or right['has_tear']:
+    #         self.get_logger().info('Discard reason: defect_tear')
+    #         return {'discard': True}
+
+    #     if left['has_stain'] or right['has_stain']:
+    #         self.get_logger().info('Discard reason: defect_stain')
+    #         return {'discard': True}
+
+    #     if left['color'] is None or right['color'] is None:
+    #         self.get_logger().info('Discard reason: incomplete_pair')
+    #         return {'discard': True}
+
+    #     if left['color'] != right['color']:
+    #         self.get_logger().info('Discard reason: mismatch_class')
+    #         return {'discard': True}
+
+    #     if left['size'] == 0 or right['size'] == 0:
+    #         self.get_logger().info('Discard reason: incomplete_pair (size)')
+    #         return {'discard': True}
+
+    #     if left['size'] != right['size']:
+    #         self.get_logger().info('Discard reason: mismatch_size')
+    #         return {'discard': True}
+
+    #     return {'discard': False}
+
     def _judge_pair(self, left: dict, right: dict) -> dict:
-        if left['has_tear'] or right['has_tear']:
-            self.get_logger().info('Discard reason: defect_tear')
-            return {'discard': True}
+    """짝 검사는 내부적으로 그대로 수행. discard 여부 + 대표 color/size만 반환."""
+    discard = False
 
-        if left['has_stain'] or right['has_stain']:
-            self.get_logger().info('Discard reason: defect_stain')
-            return {'discard': True}
+    if left['has_tear'] or right['has_tear']:
+        discard = True
+    elif left['has_stain'] or right['has_stain']:
+        discard = True
+    elif left['color'] is None or right['color'] is None:
+        discard = True
+    elif left['color'] != right['color']:
+        discard = True
+    elif left['size'] == 0 or right['size'] == 0:
+        discard = True
+    elif left['size'] != right['size']:
+        discard = True
 
-        if left['color'] is None or right['color'] is None:
-            self.get_logger().info('Discard reason: incomplete_pair')
-            return {'discard': True}
+    color_str = left['color'] or right['color']
+    color_int = COLOR_TO_INT.get(color_str, -1)
+    size = left['size'] if left['size'] else right['size']
 
-        if left['color'] != right['color']:
-            self.get_logger().info('Discard reason: mismatch_class')
-            return {'discard': True}
-
-        if left['size'] == 0 or right['size'] == 0:
-            self.get_logger().info('Discard reason: incomplete_pair (size)')
-            return {'discard': True}
-
-        if left['size'] != right['size']:
-            self.get_logger().info('Discard reason: mismatch_size')
-            return {'discard': True}
-
-        return {'discard': False}
+    return {'discard': discard, 'color': color_int, 'size': size}
 
     # ------------------------------------------------------------------
     # 결과 발행
     # ------------------------------------------------------------------
 
-    def _publish_result(self, left: dict, right: dict, judgement: dict):
-        msg = ShoeInspectionResult()
-        msg.discard = judgement['discard']
-        msg.left_color = left['color'] or ''
-        msg.left_size = left['size']
-        msg.right_color = right['color'] or ''
-        msg.right_size = right['size']
-        self.pub_result.publish(msg)
+    # def _publish_result(self, left: dict, right: dict, judgement: dict):
+    #     msg = ShoeInspectionResult()
+    #     msg.discard = judgement['discard']
+    #     msg.left_color = left['color'] or ''
+    #     msg.left_size = left['size']
+    #     msg.right_color = right['color'] or ''
+    #     msg.right_size = right['size']
+    #     self.pub_result.publish(msg)
 
-        self.get_logger().info(
-            f"[RESULT] discard={judgement['discard']}, "
-            f"L=(color={left['color']}, size={left['size']}), "
-            f"R=(color={right['color']}, size={right['size']})"
-        )
+    #     self.get_logger().info(
+    #         f"[RESULT] discard={judgement['discard']}, "
+    #         f"L=(color={left['color']}, size={left['size']}), "
+    #         f"R=(color={right['color']}, size={right['size']})"
+    #     )
+
+    def _publish_result(self, left: dict, right: dict, judgement: dict):
+    msg = ShoeInspectionResult()
+    msg.discard = judgement['discard']
+    msg.color = judgement['color']
+    msg.size = judgement['size']
+    self.pub_result.publish(msg)
+
+    self.get_logger().info(
+        f"[RESULT] discard={judgement['discard']}, "
+        f"color={judgement['color']}, size={judgement['size']}"
+    )
 
 
 def main(args=None):
