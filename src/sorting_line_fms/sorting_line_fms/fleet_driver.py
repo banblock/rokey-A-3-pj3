@@ -67,14 +67,21 @@ _COMMAND_QOS = QoSProfile(
 # 안 바꿔도 그대로 동작한다.
 
 ARRIVE_RADIUS_M = 0.12  # 로봇 트랙폭(0.4132m) 대비 15cm는 너무 헐거워서 8cm로 조정
-# 중간 경유지라도 이 거리 안에 들어오면 최고 속도를 유지하지 않고 감속한다.
-# 축 정렬(직선) 구간에서는 도착 반경을 최고 속도로 지나쳐도 그냥 "같은 선 위에서
-# 조금 더 갔다가 오는" 정도라 안 보이지만, 방향이 크게 꺾이는 지점(예:
-# PICKUP_APPROACH → PICKUP_WAIT처럼 대각선/급회전 구간)에서는 같은 오버슈트가
-# 다음 목표의 heading_error를 크게 만들어 그 반경 밖으로 휘어져 나가는(선을
-# 벗어나는) 것처럼 보인다. 너무 크게 잡으면 세분화 칸마다 다시 "잠깐 멈칫"하는
-# 문제가 재발하니 작은 값만 준다.
-OVERSHOOT_GUARD_M = 0.3
+# _subdivide_edge가 자동으로 만든 본선 세분화 칸("__"이 이름에 들어간 노드)은
+# 항상 실제 두 노드 사이를 직선 보간(t=0~1)한 결과라서, 태생적으로 전부 일직선
+# 위에 있다 — 방향이 꺾이는 지점은 항상 "__"가 없는 진짜 노드(APPROACH 등)
+# 에서만 생기고, 세분화 칸끼리는 절대 안 꺾인다. 그래서 이 칸들만 도착 반경을
+# 넉넉하게 잡아도 다음 칸으로 넘어갈 때 오차가 누적되지 않는다(다음 목표는
+# 항상 로봇의 실시간 절대 위치에서 다시 계산되므로) — 굴절점(꺾이는 진짜
+# 노드)은 여기 해당 안 되니 ARRIVE_RADIUS_M을 그대로 쓴다.
+WAYPOINT_RADIUS_M = 0.35
+# 예전엔 여기(비최종 홉이 도착 반경 0.3m 안에 들어오면 감속)에 OVERSHOOT_GUARD_M을
+# 뒀었는데, 사실 비최종 홉은 전부 세분화 칸("__" 포함, 위 WAYPOINT_RADIUS_M
+# 설명대로 항상 일직선)이라 애초에 꺾일 일이 없어서 이 감속 자체가 불필요했다
+# — 코너링 문제는 실제로는 진짜 굴절점(HUB_A_APPROACH 등, "__" 없어서
+# is_final=True로 이미 K_LINEAR*distance 감속이 걸림)에서 생기는 거라 여기서
+# 따로 손 쓸 필요가 없었다. WAYPOINT_RADIUS_M을 넉넉하게 키운 지금은 세분화
+# 칸에서 감속 없이 최고 속도를 계속 유지한다.
 MAX_LINEAR_MPS = 0.6
 MAX_ANGULAR_RPS = 1.2
 K_LINEAR = 0.8
@@ -109,6 +116,14 @@ def _is_pickup_area_node(node_id):
     if node_id.endswith("_HOME") or node_id.endswith("_FAR"):
         return True
     return False
+
+
+def _is_platoon_segment(node_id):
+    """_subdivide_edge가 자동으로 만든 본선 세분화 칸인지 판정한다 — 이름에
+    "__"(이중 언더스코어)이 들어있으면 항상 세분화 칸이고, 실제 노드 이름
+    (PICKUP_A, HUB_A_APPROACH 등)은 전부 단일 언더스코어만 쓰므로 이 표시로
+    구분할 수 있다(1_conveyor_sorter_env.py의 is_final_hop 판정과 동일한 기준)."""
+    return node_id is not None and "__" in node_id
 
 
 def _yaw_from_quaternion(q):
@@ -221,7 +236,11 @@ class FleetDriver(Node):
             dy = target[1] - robot["y"]
             distance = math.hypot(dx, dy)
 
-            if distance <= ARRIVE_RADIUS_M:
+            # 세분화 칸("__" 포함)은 항상 일직선 위라 넉넉한 반경으로 판정해도
+            # 다음 칸으로 넘어갈 때 오차가 안 쌓인다(WAYPOINT_RADIUS_M 설명 참고).
+            # 진짜 목적지/굴절점은 기존 타이트한 반경 그대로.
+            arrive_radius = WAYPOINT_RADIUS_M if _is_platoon_segment(robot["target_node"]) else ARRIVE_RADIUS_M
+            if distance <= arrive_radius:
                 arrived_node = robot["target_node"]
                 is_final = robot["target_is_final"]
                 robot["target_xy"] = None
@@ -239,19 +258,12 @@ class FleetDriver(Node):
 
             heading_error = _normalize_angle(math.atan2(dy, dx) - robot["yaw"])
 
-            if robot["target_is_final"] or distance <= OVERSHOOT_GUARD_M:
-                # 진짜 목적지이거나, 중간 경유지라도 도착 반경 바로 앞(OVERSHOOT_GUARD_M
-                # 이내)이면 감속한다 — 방향이 꺾이는 경유지를 최고 속도로 그대로
-                # 지나치면 다음 목표를 향한 heading_error가 커져 코너를 크게
-                # 돌며 선을 벗어나 보이는 문제가 있었다.
+            if robot["target_is_final"]:
+                # 진짜 목적지/굴절점 — 도착 직전 자연스럽게 감속(P 제어).
                 base_speed = min(K_LINEAR * distance, MAX_LINEAR_MPS)
             else:
-                # 아직 경유지에서 멀리 떨어져 있으면(OVERSHOOT_GUARD_M 밖) 중간
-                # 경유지(본선 세분화 칸)는 최고 속도를 그대로 유지해 칸 경계를
-                # 매끄럽게 통과한다(실제 전진 속도는 아래 speed_scale로 조절됨) —
-                # 매 칸 경계마다 처음부터 끝까지 distance 비례로 감속하면 "잠깐
-                # 멈칫"하는 문제가 있었는데, 감속 구간을 도착 직전으로만
-                # 좁혀서 그 문제는 유지하면서 코너링 오버슈트만 줄인다.
+                # 세분화 칸은 애초에 안 꺾이므로(WAYPOINT_RADIUS_M 설명 참고)
+                # 감속 없이 최고 속도로 매끄럽게 통과한다.
                 base_speed = MAX_LINEAR_MPS
 
             # 각도 오차가 크면 "완전 정지 후 제자리 회전 → 정렬되면 그제서야 직진"
