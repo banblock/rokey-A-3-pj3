@@ -15,12 +15,12 @@ import numpy as np
 from recycle_interfaces.msg import ShoeInspectionResult
 
 
-CONF_THRESHOLD_SHOE = 0.5
-CONF_THRESHOLD_DEFECT = 0.2
+CONF_THRESHOLD_SHOE = 0.7
+CONF_THRESHOLD_DEFECT = 0.4
 CONF_THRESHOLD_MIN = min(CONF_THRESHOLD_SHOE, CONF_THRESHOLD_DEFECT)
-DEFECT_OVERLAP_THRESHOLD = 0.3
+DEFECT_OVERLAP_THRESHOLD = 0.5
 
-COLOR_TO_INT = {'red': 0, 'green': 1, 'yellow': 2}
+# COLOR_TO_INT = {'red': 0, 'green': 1, 'yellow': 2}
 
 
 class VisionNode(Node):
@@ -271,7 +271,7 @@ class VisionNode(Node):
         return result
 
     # ------------------------------------------------------------------
-    @staticmethod
+    # @staticmethod
     # def _best_shoe_det(dets: list, side: str):
     #     candidates = [
     #         d for d in dets
@@ -290,18 +290,36 @@ class VisionNode(Node):
     #         'bbox': best['bbox'],
     #     }
 
+    # @staticmethod
+    # def _best_shoe_pair_det(dets: list):
+    #     """sneakers_0(켤레 전체) 중 confidence 가장 높은 것 하나."""
+    #     candidates = [d for d in dets if d['class_name'] == 'sneakers_0']
+    #     if not candidates:
+    #         return None
+
+    #     best = max(candidates, key=lambda d: d['confidence'])
+    #     return {
+    #         'confidence': best['confidence'],
+    #         'bbox': best['bbox'],
+    #     }
+
     @staticmethod
     def _best_shoe_pair_det(dets: list):
-        """sneakers_0(켤레 전체) 중 confidence 가장 높은 것 하나."""
+        """
+        sneakers_0 탐지 결과가 여러 개(중복/분리)로 나올 수 있으므로,
+        모두 합쳐(union) 하나의 bbox로 반환.
+        """
         candidates = [d for d in dets if d['class_name'] == 'sneakers_0']
         if not candidates:
             return None
 
-        best = max(candidates, key=lambda d: d['confidence'])
-        return {
-            'confidence': best['confidence'],
-            'bbox': best['bbox'],
-        }
+        x1 = min(d['bbox'][0] for d in candidates)
+        y1 = min(d['bbox'][1] for d in candidates)
+        x2 = max(d['bbox'][2] for d in candidates)
+        y2 = max(d['bbox'][3] for d in candidates)
+        best_conf = max(d['confidence'] for d in candidates)
+
+        return {'confidence': best_conf, 'bbox': [x1, y1, x2, y2]}
 
     @staticmethod
     def _bbox_intersection_area(box_a, box_b) -> float:
