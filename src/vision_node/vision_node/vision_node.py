@@ -69,7 +69,7 @@ class VisionNode(Node):
         # )
 
         self.sub_trigger = self.create_subscription(
-            Bool, '/sim/inspect_shoe_pair',
+            Bool, '/shoe_stop',
             lambda msg: self.trigger_callback(msg), 10,
         )
 
@@ -96,6 +96,7 @@ class VisionNode(Node):
     # ------------------------------------------------------------------
 
     def trigger_callback(self, msg):
+        self.get_logger().info(f'{msg}')
         """검사 요청 수신 (서비스). 이 시점부터 들어오는 카메라 프레임을 캡처 대상으로 삼는다."""
         if msg.data is False:
             self.get_logger().info('Inspection request canceled')
@@ -423,18 +424,18 @@ class VisionNode(Node):
 
     #     return {'discard': discard, 'color': color_int, 'size': size}
 
-def _judge_pair(self, result: dict) -> dict:
-    """
-    TODO: 색상 일치 판정(OpenCV 픽셀 카운팅)은 추후 추가.
-    지금은 신발 감지 여부 + tear 유무만으로 판정.
-    """
-    if not result['shoe_found']:
-        return {'discard': True, 'reason': 'no_shoe_detected'}
+    def _judge_pair(self, result: dict) -> dict:
+        """
+        TODO: 색상 일치 판정(OpenCV 픽셀 카운팅)은 추후 추가.
+        지금은 신발 감지 여부 + tear 유무만으로 판정.
+        """
+        if not result['shoe_found']:
+            return {'discard': True, 'reason': 'no_shoe_detected'}
 
-    if result['has_tear']:
-        return {'discard': True, 'reason': 'defect_tear'}
+        if result['has_tear']:
+            return {'discard': True, 'reason': 'defect_tear'}
 
-    return {'discard': False, 'reason': 'ok'}
+        return {'discard': False, 'reason': 'ok'}
 
     # ------------------------------------------------------------------
     # 결과 발행
