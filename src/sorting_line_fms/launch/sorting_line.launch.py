@@ -26,7 +26,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     use_main_control_stub = LaunchConfiguration("use_main_control_stub")
-
+    
     fms_node = Node(
         package="sorting_line_fms",
         executable="fms_node",
@@ -34,11 +34,18 @@ def generate_launch_description():
         output="screen",
     )
 
+    # fleet_driver.py는 config_module 파라미터로 어떤 그래프를 쓸지 정한다
+    # (안 주면 fleet_driver.py 기본값인 "fleet_config"). fms_node.py는 지금
+    # fleet_config_test1을 고정 import하고 있어서, 여기서 안 맞춰주면
+    # fleet_driver만 원래 운영용 fleet_config를 봐서 스폰 위치/자세가 서로
+    # 어긋나 로봇이 엉뚱한 곳으로 가는 문제가 있었다 — fms_node.py가 쓰는
+    # 것과 반드시 같은 config_module을 줘야 한다.
     fleet_driver = Node(
         package="sorting_line_fms",
         executable="fleet_driver",
         name="fleet_driver",
         output="screen",
+        parameters=[{"config_module": "fleet_config_test1"}],
     )
 
     main_control_stub = Node(
