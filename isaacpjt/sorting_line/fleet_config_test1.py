@@ -2,6 +2,16 @@
 """노드 그래프 / 로봇-종류 배정 — fms_node.py, fleet_driver.py, Isaac Sim
 스크립트(1_conveyor_sorter_env.py, 3_amr_fleet.py)가 전부 공유하는 순수 데이터 모듈.
 
+fleet_config.py에서 신발 종류를 A 하나만 남긴 최소 테스트용 버전 — 라인 1개
+(랙 1개, 로봇 2대)만 있는 상황을 빠르게 재현/디버깅하기 위함. B/C/D의
+PICKUP/HUB/Rack 블록을 통째로 지웠고, A가 SHOE_TYPES 맨 앞이었기 때문에
+로봇 번호(amr_1, amr_2)는 원본과 동일하게 유지된다. ROBOTS_PER_TYPE은
+원본과 동일하게 2로 뒀다 — 종류를 1개로 줄인 목적이 "여러 종류가 뒤섞이는
+경우"를 배제하고 "같은 종류 로봇 2대끼리의 상호작용"(근접/detour 경쟁,
+배치 디스패치 등)만 집중적으로 테스트하기 위함이라, 로봇 수까지 줄이면 그
+테스트 대상 자체가 없어진다. 로봇 1대만 필요하면 ROBOTS_PER_TYPE만 1로
+바꾸면 된다(그 값 하나로 전체가 자동으로 맞춰짐).
+
 rclpy, m0609_interfaces 등 ROS2 관련 패키지를 절대 import하지 않는다 — Isaac Sim은
 자체 번들 파이썬(3.11)을 쓰는데, 시스템 rclpy는 다른 파이썬 ABI(3.10)로 빌드돼
 있고 커스텀 srv 패키지(m0609_interfaces)는 애초에 그 환경에 없다. 이 상수들을
@@ -13,9 +23,9 @@ import heapq
 import math
 
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  A. 로봇 배정 (신발 종류별 2대 전담)                                ║
+# ║  A. 로봇 배정 (신발 종류 1개, 로봇 2대 전담)                          ║
 # ╚══════════════════════════════════════════════════════════════╝
-SHOE_TYPES = ["A", "B", "C", "D"]
+SHOE_TYPES = ["A"]
 ROBOTS_PER_TYPE = 2
 
 ROBOT_SHOE_TYPE = {
@@ -24,8 +34,7 @@ ROBOT_SHOE_TYPE = {
         shoe_type for shoe_type in SHOE_TYPES for _ in range(ROBOTS_PER_TYPE)
     )
 }
-# {"amr_1": "A", "amr_2": "A", "amr_3": "B", "amr_4": "B",
-#  "amr_5": "C", "amr_6": "C", "amr_7": "D", "amr_8": "D"}
+# {"amr_1": "A", "amr_2": "A"}
 
 # 신발 종류별 전용 픽업 지점 — 로봇은 자기 담당 종류의 픽업 지점에서만 신발을 받는다.
 PICKUP_NODE = {shoe_type: f"PICKUP_{shoe_type}" for shoe_type in SHOE_TYPES}
@@ -70,86 +79,38 @@ for _i, _robot_id in enumerate(ROBOT_SHOE_TYPE):
 # ╚══════════════════════════════════════════════════════════════╝
 
 NODE_GRAPH = {
-    # 1. 픽업 지점 (신발 종류별로 분리 — 각 로봇은 자기 담당 종류의 픽업
-    # 지점으로만 들어간다). 실제 컨베이어는 아직 단일 벨트/단일 픽업 지점이라
-    # 아래 4곳의 좌표는 임시값이다 — 종류별 벨트/분기 배치가 실제로 정해지면
-    # 실측치로 교체해야 한다. 간격을 2.0m로 둔 건 Nova Carter 스폰 충돌
-    # 전례(0.5m 확실히 충돌, 1.0m도 부족, 2.0m에서 해결됨) 때문.
-    "PICKUP_A":     {"position": (1.7, 0.0, 0.794), "neighbors": ["HUB_A"]},
-    "PICKUP_B":     {"position": (3.7, 0.0, 0.794), "neighbors": ["HUB_B"]},
-    "PICKUP_C":     {"position": (5.7, 0.0, 0.794), "neighbors": ["HUB_C"]},
-    "PICKUP_D":     {"position": (7.7, 0.0, 0.794), "neighbors": ["HUB_D"]},
+    # 1. 픽업 지점 — 실제 컨베이어는 아직 단일 벨트/단일 픽업 지점이라
+    # 아래 좌표는 임시값이다 — 종류별 벨트/분기 배치가 실제로 정해지면
+    # 실측치로 교체해야 한다.
+    "PICKUP_A":     {"position": (3.65, -2.65, 1.03), "neighbors": ["HUB_A"]},
 
-    # 2. 종류별 전용 경유지 — 다른 종류 로봇과는 어떤 노드도 공유하지 않는다
-    # (자기 종류 2대끼리만 노드 락을 놓고 경쟁). 예전에 8대 전체가 HUB_1~4
-    # 순환 루프 하나를 공유했을 때는, A종류 로봇이 경로 중간에 멈추면 그
-    # 루프를 지나야 하는 C/D종류 로봇까지 덩달아 막히는 문제가 있었다
-    # (본선-지선 미분리 문제) — 지금은 종류별로 픽업→경유지→랙→복귀까지
-    # 완전히 독립된 통로를 쓴다.
-    #
-    # HUB의 Y가 랙 안쪽(대/중/소)보다 더 크다(더 "깊다") — 즉 로봇은 픽업에서
-    # 나와 랙 구역 중 가장 깊은 지점(HUB)까지 갔다가 얕은 쪽(소)으로 내려오면서
-    # 신발을 놓고, 가장 얕은 지점(OUT)에서 바로 복귀한다. 예전에는 반대였는데
-    # (HUB가 얕고 OUT이 깊음), 그러면 복귀 구간(OUT→픽업)이 랙 전체 깊이만큼
-    # 길어져서 왕복 경로끼리 겹칠 위험이 컸다. HUB→랙 진입 구간은 이미
-    # 세분화(_subdivide_edge)돼 있어 길어져도 안전하지만, 복귀 구간은 세분화가
-    # 안 돼 있어서 짧게 유지하는 쪽이 유리하다.
-    "HUB_A":        {"position": (-1.25, 4.3, 0.0), "neighbors": ["RackA_280", "RackA_280_detour"]},
-    "HUB_B":        {"position": (-3.75, 4.8, 0.0), "neighbors": ["RackB_280", "RackB_280_detour"]},
-    "HUB_C":        {"position": (13.15, 4.8, 0.0), "neighbors": ["RackC_280", "RackC_280_detour"]},
-    "HUB_D":        {"position": (10.65, 4.3, 0.0), "neighbors": ["RackD_280", "RackD_280_detour"]},
+    # 2. 종류별 전용 경유지. HUB의 Y가 랙 안쪽(280/260/240)보다 더 크다(더
+    # "깊다") — 즉 로봇은 픽업에서 나와 랙 구역 중 가장 깊은 지점(HUB)까지
+    # 갔다가 얕은 쪽(240)으로 내려오면서 신발을 놓고, 가장 얕은 지점(OUT)에서
+    # 바로 복귀한다. HUB→랙 진입 구간은 이미 세분화(_subdivide_edge)돼 있어
+    # 길어져도 안전하지만, 복귀 구간은 세분화가 안 돼 있어서 짧게 유지하는
+    # 쪽이 유리하다.
+    "HUB_A":        {"position": (-5.65, -10.0, 1.03), "neighbors": ["RackA_280", "RackA_280_detour"]},
 
-    # 3. 랙 A — 사용자 도면 기준 컨베이어에 더 가까운("안쪽") 랙. A/B 한 쌍
-    # 중에서는 A가 안쪽, B가 바깥쪽 — 근접/detour 통로 전체를 B 대비 X를 픽업
-    # 열 중심에 더 가깝게 둬서 표현한다.
-    #
-    # 근접/detour는 두 개의 완전히 분리된 통로. 신발은 항상 대→중→소 순서로
-    # 내려놓는다(사용자 지정). 두 통로가 같은 노드를 반대 방향으로 공유하면
-    # 서로 마주보고 맞물려 데드락이 나므로(A는 중을 들고 소를 기다리고, B는
-    # 소를 들고 중을 기다리는 식), 아예 노드 자체를 안 겹치게 detour용 사본을
-    # 따로 둔다. 소/중/대(근접)는 원래 X,Y가 완전히 같고 Z(선반 높이)만
-    # 달랐는데, 지상 로봇은 Z를 무시하므로 실제로는 같은 지점이었다 —
-    # 사이즈별로 Y(랙 안쪽 깊이)를 갈라 물리적으로도 분리했고, detour 통로는 아예
-    # 다른 X대(근접 통로 옆, 중심에서 바깥 방향으로 0.6m)를 써서 두 직선이
-    # 좌우로 나란히 떨어지게 했다.
-    "RackA_280":       {"position": (-1.25, 3.5, 2.1), "neighbors": ["RackA_260"]},
-    "RackA_260":       {"position": (-1.25, 3.0, 1.2), "neighbors": ["RackA_240"]},
-    "RackA_240":       {"position": (-1.25, 2.5, 0.3), "neighbors": ["RackA_OUT"]},
-    "RackA_280_detour":   {"position": (-1.85, 3.5, 2.1), "neighbors": ["RackA_260_detour"]},
-    "RackA_260_detour":   {"position": (-1.85, 3.0, 1.2), "neighbors": ["RackA_240_detour"]},
-    "RackA_240_detour":   {"position": (-1.85, 2.5, 0.3), "neighbors": ["RackA_OUT"]},
-    "RackA_OUT":     {"position": (-1.25, 2.0, 0.0), "neighbors": [PICKUP_NODE["A"], PICKUP_WAIT_NODE["A"]]},
-
-    # 4. 랙 B — A보다 컨베이어에서 더 먼("바깥쪽") 랙.
-    "RackB_280":       {"position": (-3.75, 3.5, 2.1), "neighbors": ["RackB_260"]},
-    "RackB_260":       {"position": (-3.75, 3.0, 1.2), "neighbors": ["RackB_240"]},
-    "RackB_240":       {"position": (-3.75, 2.5, 0.3), "neighbors": ["RackB_OUT"]},
-    "RackB_280_detour":   {"position": (-4.35, 3.5, 2.1), "neighbors": ["RackB_260_detour"]},
-    "RackB_260_detour":   {"position": (-4.35, 3.0, 1.2), "neighbors": ["RackB_240_detour"]},
-    "RackB_240_detour":   {"position": (-4.35, 2.5, 0.3), "neighbors": ["RackB_OUT"]},
-    "RackB_OUT":     {"position": (-3.75, 2.0, 0.0), "neighbors": [PICKUP_NODE["B"], PICKUP_WAIT_NODE["B"]]},
-
-    # 5. 랙 C — D보다 컨베이어에서 더 먼("바깥쪽") 랙. X는 A/B 랙 쌍과 좌우
-    # 대칭 느낌이 나도록 픽업/대기 구역 전체 오른쪽으로 크게 밀어냈다(원래
-    # 1.25 → 13.15, +11.9m 이동 — D도 동일 오프셋). 픽업 지점(PICKUP_C)은
-    # 그대로 두고 랙+경유지만 옮겼으므로 PICKUP_C→HUB_C 본선이 그만큼
-    # 길어지는데, 이미 세분화돼 있어 안전하다.
-    "RackC_280":       {"position": (13.15, 3.5, 2.1), "neighbors": ["RackC_260"]},
-    "RackC_260":       {"position": (13.15, 3.0, 1.2), "neighbors": ["RackC_240"]},
-    "RackC_240":       {"position": (13.15, 2.5, 0.3), "neighbors": ["RackC_OUT"]},
-    "RackC_280_detour":   {"position": (13.75, 3.5, 2.1), "neighbors": ["RackC_260_detour"]},
-    "RackC_260_detour":   {"position": (13.75, 3.0, 1.2), "neighbors": ["RackC_240_detour"]},
-    "RackC_240_detour":   {"position": (13.75, 2.5, 0.3), "neighbors": ["RackC_OUT"]},
-    "RackC_OUT":     {"position": (13.75, 2.0, 0.0), "neighbors": [PICKUP_NODE["C"], PICKUP_WAIT_NODE["C"]]},
-
-    # 6. 랙 D — C보다 컨베이어에 더 가까운("안쪽") 랙.
-    "RackD_280":       {"position": (10.65, 3.5, 2.1), "neighbors": ["RackD_260"]},
-    "RackD_260":       {"position": (10.65, 3.0, 1.2), "neighbors": ["RackD_240"]},
-    "RackD_240":       {"position": (10.65, 2.5, 0.3), "neighbors": ["RackD_OUT"]},
-    "RackD_280_detour":   {"position": (11.25, 3.5, 2.1), "neighbors": ["RackD_260_detour"]},
-    "RackD_260_detour":   {"position": (11.25, 3.0, 1.2), "neighbors": ["RackD_240_detour"]},
-    "RackD_240_detour":   {"position": (11.25, 2.5, 0.3), "neighbors": ["RackD_OUT"]},
-    "RackD_OUT":     {"position": (11.25, 2.0, 0.0), "neighbors": [PICKUP_NODE["D"], PICKUP_WAIT_NODE["D"]]},
+    # 3. 랙 A. 근접/detour는 두 개의 완전히 분리된 통로. 신발은 항상
+    # 280→260→240 순서로 내려놓는다(사용자 지정). 두 통로가 같은 노드를
+    # 반대 방향으로 공유하면 서로 마주보고 맞물려 데드락이 나므로(한 로봇은
+    # 260을 들고 240을 기다리고, 다른 로봇은 240을 들고 260을 기다리는 식),
+    # 아예 노드 자체를 안 겹치게 detour용 사본을 따로 둔다. 240/260/280(근접)은
+    # 원래 X,Y가 완전히 같고 Z(선반 높이)만 달랐는데, 지상 로봇은 Z를
+    # 무시하므로 실제로는 같은 지점이었다 — 사이즈별로 Y(랙 안쪽 깊이)를
+    # 갈라 물리적으로도 분리했고, detour 통로는 아예 다른 X대(근접 통로 옆,
+    # 중심에서 바깥 방향으로 0.6m)를 써서 두 직선이 좌우로 나란히 떨어지게 했다.
+    "RackA_280":       {"position": (-5.65, -6.0, 1.03), "neighbors": ["RackA_260"]},
+    "RackA_260":       {"position": (-5.65, -2.53, 1.03), "neighbors": ["RackA_240"]},
+    "RackA_240":       {"position": (-5.65, 2.09, 1.03), "neighbors": ["RackA_OUT"]},
+    "RackA_280_detour":   {"position": (-9.0, -6.0, 1.03), "neighbors": ["RackA_260_detour"]},
+    "RackA_260_detour":   {"position": (-9.0, -2.53, 1.03), "neighbors": ["RackA_240_detour"]},
+    "RackA_240_detour":   {"position": (-9.0, 2.09, 1.03), "neighbors": ["RackA_OUT"]},
+    "RackA_OUT":     {"position": (-5.65, 5.99, 0.0), "neighbors": ["PICKUP_A_APPROACH"]},
+    "PICKUP_A_APPROACH":    {"position": (-4.0, 5.99, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
+    "PICKUP_WAIT_A":    {"position": (-4.0, -2.65, 1.03), "neighbors": ["PICKUP_A"]},
+    
 }
 
 # 배치(5켤레) 작업을 전부 마친 로봇, 혹은 그냥 다른 로봇에게 PICKUP_X를 양보해야
@@ -157,38 +118,28 @@ NODE_GRAPH = {
 # 한 줄로 늘어놓는다 — 초기 스폰 위치로도 재사용된다(ROBOT_HOME_NODE 참고).
 # WAIT_X(맨 앞)는 항상 만들고, WAIT2_X 이후는 ROBOTS_PER_TYPE이 3 이상일 때만
 # PICKUP_EXTRA_WAIT_NODES에 담겨 있으므로 자동으로 그만큼만 이어붙는다.
-# 슬롯 간 간격을 (dx, dy) 벡터로 준다 — 예전엔 스칼라 하나를 무조건 -Y 방향에만
-# 적용해서, 실제 환경에서 대기열이 다른 방향으로 늘어서야 하면 손댈 방법이
-# 없었다. 벡터로 바꾸면 방향까지 자유롭게 정할 수 있고, (0.0, -0.5)를 주면
-# 기존과 완전히 동일하게 동작한다(하위 호환).
-_WAIT_SLOT_OFFSET = (0.0, -0.5)  # (dx, dy) — 다음 슬롯이 이전 슬롯 대비 이만큼 떨어진 방향(스케일 전)
-for _shoe_type in SHOE_TYPES:
-    _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
-    _wait_dx, _wait_dy = _WAIT_SLOT_OFFSET
-    NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
-        "position": (_pickup_pos[0] + _wait_dx, _pickup_pos[1] + _wait_dy, _pickup_pos[2]),
-        "neighbors": [PICKUP_NODE[_shoe_type]],
-    }
-    _prev_slot = PICKUP_WAIT_NODE[_shoe_type]
-    for _extra_idx, _extra_slot in enumerate(PICKUP_EXTRA_WAIT_NODES[_shoe_type]):
-        NODE_GRAPH[_extra_slot] = {
-            "position": (
-                _pickup_pos[0] + _wait_dx * (_extra_idx + 2),
-                _pickup_pos[1] + _wait_dy * (_extra_idx + 2),
-                _pickup_pos[2],
-            ),
-            "neighbors": [_prev_slot],
-        }
-        _prev_slot = _extra_slot
+    # _WAIT_SLOT_SPACING = 0.5  # 슬롯 간 Y 간격(스케일 전) — 기존 WAIT_X 오프셋 그대로 유지
+    # for _shoe_type in SHOE_TYPES:
+    #     _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
+    #     NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
+    #         "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING, _pickup_pos[2]),
+    #         "neighbors": [PICKUP_NODE[_shoe_type]],
+    #     }
+    #     _prev_slot = PICKUP_WAIT_NODE[_shoe_type]
+    #     for _extra_idx, _extra_slot in enumerate(PICKUP_EXTRA_WAIT_NODES[_shoe_type]):
+    #         NODE_GRAPH[_extra_slot] = {
+    #             "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING * (_extra_idx + 2), _pickup_pos[2]),
+    #             "neighbors": [_prev_slot],
+    #         }
+    #         _prev_slot = _extra_slot
 
 # PICKUP_X → HUB_X 굴절점(종류별 하나) — HUB_X_APPROACH를 "HUB의 X, 픽업의 Y"로
 # 두면 HUB_APPROACH→HUB 구간(수직)이 HUB와 같은 X를 쓰는 근접 레인 랙 컬럼
-# (RackX_280/260/240, Y=6.25~8.75대)을 그대로 관통해버린다 — 대각선만 없앴지
-# "세로로 랙을 뚫고 지나가는" 문제가 남아있었다. 대신 "픽업의 X, HUB의 Y"로
-# 둬서: 픽업 자신의 전용 컬럼(다른 종류의 랙과 절대 안 겹치는 X)을 타고 랙
-# 꼭대기보다 높은 HUB의 Y까지 먼저 수직으로 올라간 다음, 랙 위쪽(랙 영역보다
-# 높은 층)에서만 수평으로 HUB까지 이동한다 — 이러면 랙 영역(Y=6.25~8.75대)을
-# 수직/수평 어느 구간에서도 절대 지나가지 않는다.
+# (RackX_280/260/240)을 그대로 관통해버린다 — 대각선만 없앴지 "세로로 랙을
+# 뚫고 지나가는" 문제가 남아있었다. 대신 "픽업의 X, HUB의 Y"로 둬서: 픽업
+# 자신의 전용 컬럼을 타고 랙 꼭대기보다 높은 HUB의 Y까지 먼저 수직으로 올라간
+# 다음, 랙 위쪽(랙 영역보다 높은 층)에서만 수평으로 HUB까지 이동한다 —
+# 이러면 랙 영역을 수직/수평 어느 구간에서도 절대 지나가지 않는다.
 for _shoe_type in SHOE_TYPES:
     _pickup_x = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][0]
     _hub_y = NODE_GRAPH[f"HUB_{_shoe_type}"]["position"][1]
@@ -201,37 +152,28 @@ for _shoe_type in SHOE_TYPES:
 # RackX_OUT → PICKUP_X 굴절점(종류별 하나) — 복귀할 때도 OUT에서 픽업까지
 # 대각선으로 바로 가면 랙 구역을 가로지른다. OUT의 X를 그대로 따라 수직으로
 # 내려온 다음, 픽업 열의 깊이(Y=0)에서 수평으로 이동하게 중간점을 끼워 넣는다
-# — 나가는 길(HUB_X_APPROACH)과 정확히 대칭되는 구조.
-#
-# B/C는 "바깥쪽" 타입이라 RackX_OUT의 X가 짝인 안쪽 타입(A/D)보다 픽업 열
-# 중심에서 더 멀다. APPROACH를 전부 같은 Y(픽업 열 깊이)에 두면, B/C의
-# OUT→APPROACH→PICKUP 구간이 그 사이에 낀 안쪽 타입(A/D)의 픽업 지점을 그대로
-# 가로지른다 — B/C만 APPROACH의 Y를 한 단 더 낮춰서(픽업 열보다 얕은 깊이)
-# 안쪽 타입 동선과 아예 다른 깊이에서 지나가게 분리한다.
-#
-# (dx, dy) 벡터로 준다 — 예전엔 스칼라 하나가 무조건 Y에만 더해져서(X는 항상
-# RackX_OUT의 X 그대로) 방향을 못 바꿨다. 벡터로 바꾸면 X 쪽도 필요하면 밀어낼
-# 수 있고, dx=0인 지금 값들은 기존과 완전히 동일하게 동작한다(하위 호환).
-_APPROACH_OFFSET = {"A": (0.0, 0.0), "B": (0.0, -1.0), "C": (0.0, -1.0), "D": (0.0, 0.0)}
-for _shoe_type in SHOE_TYPES:
-    _out_x = NODE_GRAPH[f"Rack{_shoe_type}_OUT"]["position"][0]
-    _approach_dx, _approach_dy = _APPROACH_OFFSET[_shoe_type]
-    _approach_y = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][1] + _approach_dy
-    NODE_GRAPH[f"PICKUP_{_shoe_type}_APPROACH"] = {
-        "position": (_out_x + _approach_dx, _approach_y, 0.0),
-        # PICKUP_X가 비어있어도 APPROACH에서 곧장 들어가지 않고 항상
-        # PICKUP_WAIT_X를 먼저 거치게 한다 — 복귀 경로를 단일 통로로 고정해서
-        # (PICKUP_X 직행/PICKUP_WAIT_X 대기 두 갈래로 갈리지 않게) 진입 방향을
-        # 하나로 통일한다. PICKUP_WAIT_X → PICKUP_X 엣지는 원래 있던 걸 그대로 탄다.
-        "neighbors": [PICKUP_WAIT_NODE[_shoe_type]],
-    }
-    NODE_GRAPH[f"Rack{_shoe_type}_OUT"]["neighbors"] = [f"PICKUP_{_shoe_type}_APPROACH"]
+# — 나가는 길(HUB_X_APPROACH)과 정확히 대칭되는 구조. 종류가 하나뿐이라 다른
+# 타입과의 동선 교차를 피하려고 Y를 낮추는 오프셋(원본의 B/C 전용 처리)은
+# 필요 없어서 0으로 둔다.
+# _APPROACH_Y_OFFSET = {"A": 0.0}
+# for _shoe_type in SHOE_TYPES:
+#     _out_x = NODE_GRAPH[f"Rack{_shoe_type}_OUT"]["position"][0]
+#     _approach_y = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][1] + _APPROACH_Y_OFFSET[_shoe_type]
+#     NODE_GRAPH[f"PICKUP_{_shoe_type}_APPROACH"] = {
+#         "position": (_out_x, _approach_y, 0.0),
+#         # PICKUP_X가 비어있어도 APPROACH에서 곧장 들어가지 않고 항상
+#         # PICKUP_WAIT_X를 먼저 거치게 한다 — 복귀 경로를 단일 통로로 고정해서
+#         # (PICKUP_X 직행/PICKUP_WAIT_X 대기 두 갈래로 갈리지 않게) 진입 방향을
+#         # 하나로 통일한다. PICKUP_WAIT_X → PICKUP_X 엣지는 원래 있던 걸 그대로 탄다.
+#         "neighbors": [PICKUP_WAIT_NODE[_shoe_type]],
+#     }
+#     NODE_GRAPH[f"Rack{_shoe_type}_OUT"]["neighbors"] = [f"PICKUP_{_shoe_type}_APPROACH"]
 
 # 전체 포인트가 서로 너무 가깝다는 피드백으로 X,Y만 일괄로 넓힌다(Z는 선반
 # 높이라 스케일하면 랙이 비정상적으로 커지므로 그대로 둔다). 아래쪽 본선
 # 세분화(_subdivide_edge)는 이 스케일이 다 적용된 뒤의 실제 거리를 기준으로
 # 칸을 나누므로, 칸 크기(1.2m 목표)는 이 배율과 무관하게 항상 정확하게 유지된다.
-_GRAPH_SCALE = 2.5
+_GRAPH_SCALE = 1
 for _node_data in NODE_GRAPH.values():
     _sx, _sy, _sz = _node_data["position"]
     _node_data["position"] = (_sx * _GRAPH_SCALE, _sy * _GRAPH_SCALE, _sz)
@@ -317,7 +259,7 @@ def shortest_path(start, goal):
 
 TARGET_SLOT_NODE = {
     (t, s): f"Rack{t}_{s}"
-    for t in ["A", "B", "C", "D"]
+    for t in SHOE_TYPES
     for s in ["240", "260", "280"]
 }
 
@@ -325,12 +267,12 @@ TARGET_SLOT_NODE = {
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  C. 본선 구간 세분화 (플래투닝)                                    ║
 # ╚══════════════════════════════════════════════════════════════╝
-# 종류별로 완전히 분리된 지금도, PICKUP_X → HUB_X_APPROACH → HUB_X 구간만큼은
-# 그 종류를 담당하는 로봇 2대가 같이 쓰는 "본선"이다(그 뒤 HUB_X →
-# RackX_280/280_detour는 둘 중 하나로만 갈라지는 지선이라 원래도 안 겹침). 이
-# 본선을 통짜 간선으로 두면 로봇 1대가 다 지나갈 때까지 파트너가 못 나가므로,
-# 로봇 한 대 칸(약 1.2m) 단위로 잘게 쪼개서 두 로봇이 기차처럼 꼬리를 물고
-# 지나갈 수 있게 한다. 굴절점(HUB_X_APPROACH) 전후 두 구간 다 세분화한다.
+# 종류가 하나뿐이어도, PICKUP_A → HUB_A_APPROACH → HUB_A 구간은 그 종류를
+# 담당하는 로봇 2대가 같이 쓰는 "본선"이다(그 뒤 HUB_A → RackA_280/280_detour는
+# 둘 중 하나로만 갈라지는 지선이라 원래도 안 겹침). 이 본선을 통짜 간선으로
+# 두면 로봇 1대가 다 지나갈 때까지 파트너가 못 나가므로, 로봇 한 대 칸(약
+# 1.2m) 단위로 잘게 쪼개서 두 로봇이 기차처럼 꼬리를 물고 지나갈 수 있게
+# 한다. 굴절점(HUB_A_APPROACH) 전후 두 구간 다 세분화한다.
 _MAIN_LINE_SEGMENT_M = 1.2
 for _shoe_type in SHOE_TYPES:
     _subdivide_edge(PICKUP_NODE[_shoe_type], f"HUB_{_shoe_type}_APPROACH", _MAIN_LINE_SEGMENT_M)

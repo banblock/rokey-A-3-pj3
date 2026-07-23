@@ -34,7 +34,7 @@ from std_msgs.msg import String
 from recycle_interfaces.msg import PickupList
 from recycle_interfaces.srv import AmrState
 
-from fleet_config_test1 import (
+from fleet_config import (
     NODE_GRAPH,
     PICKUP_NODE,
     PICKUP_WAIT_SLOTS,

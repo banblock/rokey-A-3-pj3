@@ -20,7 +20,7 @@ from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
 
-from fleet_config_test1 import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
+from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
