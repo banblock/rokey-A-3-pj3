@@ -5,8 +5,12 @@ __pycache__/
 *.pyc
 *.usd
 *.onnx
-*.pt
 *.pth
 .claude/
 .vscode/
 *.urdf
+*.usda
+*.mdl
+*.png
+*.jpg
+*.jpeg
