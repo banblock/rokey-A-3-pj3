@@ -79,8 +79,22 @@ STOP_HOLD_SEC = 0.5
 def _is_pickup_area_node(node_id):
     """PICKUP_X, PICKUP_WAIT_X, PICKUP_WAIT2_X... 처럼 로봇이 실제로 완전히
     멈춰서 다른 로봇과 자리를 주고받아야 하는 노드인지 판정한다. PICKUP_X_APPROACH나
-    본선 세분화 칸("__" 포함)은 진짜 정지 지점이 아니라서 제외한다."""
-    return node_id is not None and node_id.startswith("PICKUP_") and "APPROACH" not in node_id and "__" not in node_id
+    본선 세분화 칸("__" 포함)은 진짜 정지 지점이 아니라서 제외한다.
+
+    crossing_test_config.py처럼 픽업 개념이 아예 없는 그래프도 있다 — 거기서도
+    완전 정지가 필요한 지점(R1_HOME/R1_FAR/R2_HOME/R2_FAR)이 있는데 PICKUP_
+    접두사가 없어서 안 걸렸었다. 그 그래프의 노드 이름 규칙("_HOME"/"_FAR"로
+    끝남)도 같이 인정한다 — 운영 그래프(fleet_config 계열)엔 이 접미사를 쓰는
+    노드가 없어서 서로 겹칠 일은 없다."""
+    if node_id is None:
+        return False
+    if "__" in node_id:
+        return False  # 본선 세분화 칸은 어떤 그래프든 진짜 정지 지점이 아님
+    if node_id.startswith("PICKUP_") and "APPROACH" not in node_id:
+        return True
+    if node_id.endswith("_HOME") or node_id.endswith("_FAR"):
+        return True
+    return False
 
 
 def _yaw_from_quaternion(q):
