@@ -1,179 +1,99 @@
 from isaacsim import SimulationApp
 
-simulation_app = SimulationApp({
+CONFIG = {
     "headless": False,
-})
+    "width": 1280,
+    "height": 720,
+}
 
+simulation_app = SimulationApp(CONFIG)
 
-import numpy as np
-import omni.timeline
+import os
+import traceback
+
 import omni.usd
+from pxr import Usd
 
-from pxr import Gf, UsdGeom
 from isaacsim.core.api import World
 from isaacsim.core.utils.extensions import enable_extension
-from isaacsim.core.utils.stage import open_stage
 
 
-# ============================================================
-# USD 및 Prim 경로
-# ============================================================
+for extension_name in (
+    "omni.graph.core",
+    "omni.graph.action_nodes",
+    "omni.graph.action_nodes_core",
+    "isaacsim.ros2.bridge",
+    "omni.physx.graph",
+    "isaacsim.asset.gen.conveyor",
+):
+    enable_extension(extension_name)
 
-USD_PATH = "/home/rokey/cobot3_ws/isaacpjt/basic/heu/stage_v7.usd"
-
-INTERFACE_PRIM_PATH = "/World/ReturnCell"
-
-SHOE_POOL_PATHS = [
-    "/World/ObjectPool/Shoe_01",
-    "/World/ObjectPool/Shoe_02",
-    "/World/ObjectPool/Shoe_03",
-    # TODO: 필요한 신발 Prim 경로 추가
-]
-
-SPAWN_POSITION = np.array([
-    -2.03979,  #  X
-    2.78587,  #   Y
-    1.92203,  #   Z
-])
-
-SPAWN_ROTATION_DEG = np.array([
-    0.0,  # Rotate X
-    0.0,  # Rotate Y
-    0.0,  # Rotate Z
-])
-
-CAMERA_TRAVEL_TIME = 1.55
+simulation_app.update()
 
 
-# ============================================================
-# Isaac Sim 초기화
-# ============================================================
-
-enable_extension("isaacsim.ros2.bridge")
-
-open_stage(USD_PATH)
-
-world = World(stage_units_in_meters=1.0)
-world.reset()
-
-stage = omni.usd.get_context().get_stage()
-timeline = omni.timeline.get_timeline_interface()
-
-interface_prim = stage.GetPrimAtPath(INTERFACE_PRIM_PATH)
-
-
-# ============================================================
-# TODO: Action Graph 공유 Attribute
-# ============================================================
-
-# Standalone -> Action Graph
-conveyor_run_attr = interface_prim.GetAttribute(
-    "standalone:conveyorRun"
-)
-
-vision_request_attr = interface_prim.GetAttribute(
-    "standalone:visionRequest"
-)
-
-# Action Graph -> Standalone
-sorter_end_sensor_attr = interface_prim.GetAttribute(
-    "actionGraph:sorterEndSensor"
+USD_PATH = os.path.expanduser(
+    "~/cobot3_ws/isaacpjt/basic/heu/stage_v10.usd"
 )
 
 
-# ============================================================
-# Object Pool 기능
-# ============================================================
+def load_usd_stage(usd_path: str) -> Usd.Stage:
+    absolute_path = os.path.abspath(os.path.expanduser(usd_path))
 
-shoe_index = 0
-current_shoe_path = None
-
-
-def spawn_next_shoe():
-    global shoe_index
-    global current_shoe_path
-
-    if shoe_index >= len(SHOE_POOL_PATHS):
-        return
-
-    current_shoe_path = SHOE_POOL_PATHS[shoe_index]
-
-    shoe_prim = stage.GetPrimAtPath(current_shoe_path)
-    shoe_prim.SetActive(True)
-
-    xform_api = UsdGeom.XformCommonAPI(shoe_prim)
-
-    xform_api.SetTranslate(
-        Gf.Vec3d(
-            float(SPAWN_POSITION[0]),
-            float(SPAWN_POSITION[1]),
-            float(SPAWN_POSITION[2]),
+    if not os.path.isfile(absolute_path):
+        raise FileNotFoundError(
+            f"USD 파일이 없습니다: {absolute_path}"
         )
-    )
 
-    xform_api.SetRotate(
-        Gf.Vec3f(
-            float(SPAWN_ROTATION_DEG[0]),
-            float(SPAWN_ROTATION_DEG[1]),
-            float(SPAWN_ROTATION_DEG[2]),
-        ),
-        UsdGeom.XformCommonAPI.RotationOrderXYZ,
-    )
+    usd_context = omni.usd.get_context()
 
-    shoe_index += 1
+    print(f"[Stage] 열기: {absolute_path}")
+    usd_context.open_stage(absolute_path)
 
+    for _ in range(50):
+        simulation_app.update()
 
-# ============================================================
-# 실행
-# ============================================================
+    stage = usd_context.get_stage()
 
-timeline.play()
+    if stage is None:
+        raise RuntimeError("USD Stage 열기 실패")
 
-spawn_next_shoe()
+    print(f"[Stage] 로딩 완료: {stage.GetRootLayer().identifier}")
 
-conveyor_run_attr.Set(True)
-vision_request_attr.Set(False)
-
-spawn_time = world.current_time
-previous_sensor_value = False
-camera_request_sent = False
+    return stage
 
 
-while simulation_app.is_running():
-    world.step(render=True)
+def main() -> None:
+    world = None
 
-    current_time = world.current_time
+    try:
+        load_usd_stage(USD_PATH)
 
-    # --------------------------------------------------------
-    # 신발이 촬영 위치에 도착
-    # --------------------------------------------------------
+        for _ in range(5):
+            simulation_app.update()
 
-    if (
-        not camera_request_sent
-        and current_time - spawn_time >= CAMERA_TRAVEL_TIME
-    ):
-        conveyor_run_attr.Set(False)
-        vision_request_attr.Set(True)
+        world = World(stage_units_in_meters=1.0)
 
-        camera_request_sent = True
+        print("[World] reset")
+        world.reset()
 
-    # --------------------------------------------------------
-    # 분류기 끝 센서 감지
-    # --------------------------------------------------------
+        for _ in range(5):
+            simulation_app.update()
 
-    sensor_value = bool(sorter_end_sensor_attr.Get())
+        print("[World] play")
 
-    if sensor_value and not previous_sensor_value:
-        spawn_next_shoe()
+        while simulation_app.is_running():
+            world.step(render=True)
 
-        conveyor_run_attr.Set(True)
-        vision_request_attr.Set(False)
+    except Exception as error:
+        print(f"[Main 오류] {error}")
+        traceback.print_exc()
 
-        spawn_time = current_time
-        camera_request_sent = False
+    finally:
+        if world is not None:
+            world.stop()
 
-    previous_sensor_value = sensor_value
+        simulation_app.close()
 
 
-timeline.stop()
-simulation_app.close()
+if __name__ == "__main__":
+    main()
