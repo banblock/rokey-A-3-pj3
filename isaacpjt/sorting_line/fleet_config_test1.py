@@ -26,7 +26,7 @@ import math
 # ║  A. 로봇 배정 (신발 종류 1개, 로봇 2대 전담)                          ║
 # ╚══════════════════════════════════════════════════════════════╝
 SHOE_TYPES = ["A"]
-ROBOTS_PER_TYPE = 1
+ROBOTS_PER_TYPE = 2
 
 ROBOT_SHOE_TYPE = {
     f"amr_{i + 1}": shoe_type
@@ -107,9 +107,9 @@ NODE_GRAPH = {
     "RackA_280_detour":   {"position": (-9.0, -6.0, 1.03), "neighbors": ["RackA_260_detour"]},
     "RackA_260_detour":   {"position": (-9.0, -2.53, 1.03), "neighbors": ["RackA_240_detour"]},
     "RackA_240_detour":   {"position": (-9.0, 2.09, 1.03), "neighbors": ["RackA_OUT"]},
-    "RackA_OUT":     {"position": (-5.65, 5.99, 0.0), "neighbors": [PICKUP_NODE["A"], PICKUP_WAIT_NODE["A"]]},
-    "PICKUP_A_APPROACH":    {"position": (-4.0, 5.99, 1.03), "neighbors": ["PICKUP_WAIT_A"]}
-    "PICKUP_WAIT_A":    {"position": (-4.0, -2.65, 1.03), "neighbors": ["PICKUP_A"]}
+    "RackA_OUT":     {"position": (-5.65, 5.99, 0.0), "neighbors": ["PICKUP_A_APPROACH"]},
+    "PICKUP_A_APPROACH":    {"position": (-4.0, 5.99, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
+    "PICKUP_WAIT_A":    {"position": (-4.0, -2.65, 1.03), "neighbors": ["PICKUP_A"]},
     
 }
 
@@ -118,20 +118,20 @@ NODE_GRAPH = {
 # 한 줄로 늘어놓는다 — 초기 스폰 위치로도 재사용된다(ROBOT_HOME_NODE 참고).
 # WAIT_X(맨 앞)는 항상 만들고, WAIT2_X 이후는 ROBOTS_PER_TYPE이 3 이상일 때만
 # PICKUP_EXTRA_WAIT_NODES에 담겨 있으므로 자동으로 그만큼만 이어붙는다.
-_WAIT_SLOT_SPACING = 0.5  # 슬롯 간 Y 간격(스케일 전) — 기존 WAIT_X 오프셋 그대로 유지
-for _shoe_type in SHOE_TYPES:
-    _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
-    NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
-        "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING, _pickup_pos[2]),
-        "neighbors": [PICKUP_NODE[_shoe_type]],
-    }
-    _prev_slot = PICKUP_WAIT_NODE[_shoe_type]
-    for _extra_idx, _extra_slot in enumerate(PICKUP_EXTRA_WAIT_NODES[_shoe_type]):
-        NODE_GRAPH[_extra_slot] = {
-            "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING * (_extra_idx + 2), _pickup_pos[2]),
-            "neighbors": [_prev_slot],
-        }
-        _prev_slot = _extra_slot
+    # _WAIT_SLOT_SPACING = 0.5  # 슬롯 간 Y 간격(스케일 전) — 기존 WAIT_X 오프셋 그대로 유지
+    # for _shoe_type in SHOE_TYPES:
+    #     _pickup_pos = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"]
+    #     NODE_GRAPH[PICKUP_WAIT_NODE[_shoe_type]] = {
+    #         "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING, _pickup_pos[2]),
+    #         "neighbors": [PICKUP_NODE[_shoe_type]],
+    #     }
+    #     _prev_slot = PICKUP_WAIT_NODE[_shoe_type]
+    #     for _extra_idx, _extra_slot in enumerate(PICKUP_EXTRA_WAIT_NODES[_shoe_type]):
+    #         NODE_GRAPH[_extra_slot] = {
+    #             "position": (_pickup_pos[0], -_WAIT_SLOT_SPACING * (_extra_idx + 2), _pickup_pos[2]),
+    #             "neighbors": [_prev_slot],
+    #         }
+    #         _prev_slot = _extra_slot
 
 # PICKUP_X → HUB_X 굴절점(종류별 하나) — HUB_X_APPROACH를 "HUB의 X, 픽업의 Y"로
 # 두면 HUB_APPROACH→HUB 구간(수직)이 HUB와 같은 X를 쓰는 근접 레인 랙 컬럼
