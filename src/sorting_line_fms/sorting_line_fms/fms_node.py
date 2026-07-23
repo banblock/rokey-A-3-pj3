@@ -343,15 +343,19 @@ class FleetManagementSystem(Node):
                 # 로봇이 근접 슬롯을 떠나면서 락이 풀렸을 수도 있고, 그 사이
                 # 다른 로봇이 들어왔을 수도 있어서다.
                 next_task = robot["tasks"][0]
-                if arrived_node.endswith("_detour"):
-                    # 이미 detour(우회) 레인 안에 들어와 있다 — detour와 근접(near)
-                    # 레인은 입구(HUB)에서만 갈라질 뿐 랙 진입 후에는 서로 이어져
-                    # 있지 않아서, 여기서 근접으로 "되돌아가려" 하면 shortest_path가
-                    # 이 레인 끝(RackX_OUT)까지 다 지나 픽업/허브를 한 바퀴 돌아
-                    # 재진입하는 경로를 돌려준다 — 실제로 로봇이 detour 260/240을
-                    # 그냥 지나쳐서 크게 우회하는 문제가 있었다. _pick_rack_target로
-                    # 재판단하지 않고, 이번 트립 동안은 detour 레인에 그대로 남는다.
-                    actual_target = f"{next_task['target_node']}_detour"
+                if arrived_node.startswith(f"Rack{shoe_type}_"):
+                    # 이미 랙 레인(근접이든 detour든) 안에 들어와 있다 — 근접↔detour는
+                    # 입구(HUB)에서만 갈라질 뿐 랙 진입 후에는 서로 이어져 있지 않아서,
+                    # 지금 레인을 바꾸려 하면 shortest_path가 반대쪽 레인 끝까지 다
+                    # 지나 픽업/허브를 한 바퀴 통째로 돌아 재진입하는 경로를 돌려준다
+                    # — 실제로 근접 레인 안에서(예: RackA_260) 마지막 신발만 detour로
+                    # 재배정되는 바람에 트립 전체를 한 바퀴 더 도는 문제가 있었다
+                    # (반대 방향인 detour→근접 전환도 똑같은 문제였음). _pick_rack_target로
+                    # 재판단하지 않고, 이번 트립 동안은 지금 들어와 있는 레인 그대로 유지한다.
+                    actual_target = (
+                        f"{next_task['target_node']}_detour" if arrived_node.endswith("_detour")
+                        else next_task["target_node"]
+                    )
                 else:
                     actual_target = self._pick_rack_target(next_task["target_node"], robot_id)
                 next_task["target_node"] = actual_target
