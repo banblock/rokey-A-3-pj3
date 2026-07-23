@@ -7,13 +7,13 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
-from db.db_manager import MongoDBManager
+# from db.db_manager import MongoDBManager
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Int32, String, Bool
-from recycle_intrefaces import PickupList
+from recycle_interfaces.msg import PickupList, ShoeInspectionResult
 
 
 SHOE_TYPES = (
@@ -84,7 +84,7 @@ class ControlNode(Node):
         # MongoDB
         # --------------------------------------------------
 
-        self.db = MongoDBManager(reset_on_start=True)
+        self.db = None #MongoDBManager(reset_on_start=True)
 
         # --------------------------------------------------
         # Subscribers
@@ -92,8 +92,8 @@ class ControlNode(Node):
 
         # Vision 결과 수신 TODO: 인터페이스 수정
         self.vision_result_sub = self.create_subscription(
-            String,
-            "/vision/result",
+            ShoeInspectionResult,
+            "/vision/inspection_result",
             self.vision_result_callback,
             20,
             callback_group=self.callback_group,
@@ -101,7 +101,7 @@ class ControlNode(Node):
 
         # 컨베이어 분류 구역 적재 완료 센서
         self.loading_complete_sub = self.create_subscription(
-            bool,
+            Bool,
             "/shoe_trigger",
             self.loading_complete_callback,
             20,
@@ -172,7 +172,7 @@ class ControlNode(Node):
     def vision_result_callback(self, msg):
         """vision 결과 callback"""
         try:
-            reusable = msg.reusable
+            reusable = msg.discard
             shoe = [msg.color, msg.size]
 
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -181,7 +181,7 @@ class ControlNode(Node):
             )
             return
 
-        if reusable:
+        if not reusable:
             with self.state_lock:
                 self.pending_classified_shoes.append(shoe) 
 
@@ -193,7 +193,7 @@ class ControlNode(Node):
             f"Vision result received: "
             f"id={msg.color}, "
             f"type={msg.size}, "
-            f"reusable={msg.reusable}"
+            f"reusable={reusable}"
         )
 
     def _publish_conveyor_sort_command(
@@ -208,7 +208,7 @@ class ControlNode(Node):
         #     destination = "reject"
 
         msg = Bool()
-        msg.data = reusable
+        msg.data = not reusable
 
         self.conveyor_command_pub.publish(msg)
         
@@ -823,8 +823,6 @@ class ControlNode(Node):
         return datetime.now(timezone.utc).isoformat()
 
     def destroy_node(self) -> bool:
-        if self.mongo_client is not None:
-            self.mongo_client.close()
 
         return super().destroy_node()
 
