@@ -423,18 +423,18 @@ class VisionNode(Node):
 
     #     return {'discard': discard, 'color': color_int, 'size': size}
 
-def _judge_pair(self, result: dict) -> dict:
-    """
-    TODO: 색상 일치 판정(OpenCV 픽셀 카운팅)은 추후 추가.
-    지금은 신발 감지 여부 + tear 유무만으로 판정.
-    """
-    if not result['shoe_found']:
-        return {'discard': True, 'reason': 'no_shoe_detected'}
+    def _judge_pair(self, result: dict) -> dict:
+        """
+        TODO: 색상 일치 판정(OpenCV 픽셀 카운팅)은 추후 추가.
+        지금은 신발 감지 여부 + tear 유무만으로 판정.
+        """
+        if not result['shoe_found']:
+            return {'discard': True, 'reason': 'no_shoe_detected'}
 
-    if result['has_tear']:
-        return {'discard': True, 'reason': 'defect_tear'}
+        if result['has_tear']:
+            return {'discard': True, 'reason': 'defect_tear'}
 
-    return {'discard': False, 'reason': 'ok'}
+        return {'discard': False, 'reason': 'ok'}
 
     # ------------------------------------------------------------------
     # 결과 발행
