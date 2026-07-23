@@ -15,6 +15,7 @@ import numpy as np
 import omni.graph.core as og
 import usdrt.Sdf
 import omni.usd
+import omni.timeline
 from pxr import Usd
 
 from isaacsim.core.api import World
@@ -49,7 +50,7 @@ NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_cart
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/stage_v10.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/recycle_test1.usd"
 )
 
 
@@ -70,6 +71,11 @@ def load_usd_stage(usd_path: str) -> Usd.Stage:
         simulation_app.update()
 
     stage = usd_context.get_stage()
+
+    stage.SetTimeCodesPerSecond(180.0)
+
+    timeline = omni.timeline.get_timeline_interface()
+    timeline.set_target_framerate(180.0)
 
     if stage is None:
         raise RuntimeError("USD Stage 열기 실패")
