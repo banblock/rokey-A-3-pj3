@@ -26,7 +26,8 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     use_main_control_stub = LaunchConfiguration("use_main_control_stub")
-
+    config_module = LaunchConfiguration("config_module")
+    
     fms_node = Node(
         package="sorting_line_fms",
         executable="fms_node",
