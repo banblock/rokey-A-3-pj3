@@ -9,3 +9,8 @@ __pycache__/
 .claude/
 .vscode/
 *.urdf
+*.usda
+*.png
+*.jpg
+*.jpeg
+*.mdl
