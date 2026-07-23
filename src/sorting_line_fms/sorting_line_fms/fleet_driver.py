@@ -41,9 +41,23 @@ if _SHARE_DIR not in sys.path:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
+
+# fms_node.py/crossing_test_fms.py가 /fms/commands를 발행할 때 쓰는 QoS와
+# 반드시 똑같이 맞춰야 한다 — TRANSIENT_LOCAL이라야, 이 노드(구독자)가 FMS
+# 노드보다 늦게(launch에서 지연 시작 등) 뜨더라도 그 사이 발행된 이동 명령을
+# 유실 없이 그대로 받는다. 예전엔 이게 안 맞아서 첫 이동 명령이 통째로
+# 사라지고, FMS가 도착 응답을 못 받아 워치독 타임아웃(수십 초)이 지나서야
+# 같은 명령을 재전송해 겨우 움직이는 문제가 있었다.
+_COMMAND_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+)
 
 # NODE_GRAPH/ROBOT_HOME_NODE/robot_spawn_yaw는 모듈 상단에서 바로 import하지
 # 않고, __init__에서 config_module 파라미터로 받은 이름으로 동적 import한다 —
@@ -125,7 +139,7 @@ class FleetDriver(Node):
         self.robots = {}  # robot_id -> {x, y, yaw, has_odom, target_xy, target_node, cmd_pub}
 
         self.status_pub = self.create_publisher(String, "/amr/status", 10)
-        self.create_subscription(String, "/fms/commands", self._on_command, 10)
+        self.create_subscription(String, "/fms/commands", self._on_command, _COMMAND_QOS)
 
         for robot_id in self.ROBOT_HOME_NODE:
             self._ensure_robot(robot_id)

@@ -173,7 +173,15 @@ class FleetManagementSystem(Node):
         # (정규화된 노드명 기준 — 근접/detour는 같은 선반이므로 카운트를 공유해야 한다).
         self._shelf_box_count = {node: 0 for node in SHELF_INDEX}
 
-        self.command_pub = self.create_publisher(String, "/fms/commands", 10)
+        # 예전엔 depth=10짜리 기본(VOLATILE) QoS였는데, 이러면 fleet_driver가
+        # 아직 구독을 안 맺은 짧은 시간(launch에서 fleet_driver를 지연 시작할
+        # 때) 사이에 나간 첫 이동 명령이 그냥 유실된다 — FMS는 "보냈다"고 믿고
+        # MOVE_TIMEOUT_SEC(60초)까지 기다리다 재전송해야만 실제로 전달되는
+        # 문제가 있었다(crossing_test_fms.py에서 정확히 같은 문제로 재현됨).
+        # RELIABLE_EVENT_QOS(TRANSIENT_LOCAL)로 바꿔서 fleet_driver가 늦게
+        # 구독해도 그 사이 발행분을 그대로 받게 한다 — 구독 쪽도 반드시 같은
+        # QoS로 맞춰야 한다(fleet_driver.py 참고).
+        self.command_pub = self.create_publisher(String, "/fms/commands", RELIABLE_EVENT_QOS)
         self.create_subscription(String, "/amr/status", self._on_robot_status, 10)
 
         # 메인 컨트롤 노드 → FMS: 신발 종류 하나에 대한 배치(길이 리스트) 작업 지시.

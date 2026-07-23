@@ -27,9 +27,24 @@ if _SHARE_DIR not in sys.path:
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from crossing_test_config import NODE_GRAPH, ROBOT_HOME_NODE  # noqa: E402
+
+# 이 노드는 생성되자마자(0.2초 타이머로) 바로 첫 이동 명령을 /fms/commands로
+# 내보내는데, launch 파일이 fleet_driver를 일부러 늦게(TimerAction 2초) 띄우기
+# 때문에 fleet_driver의 구독이 아직 없는 채로 첫 명령이 나가버린다. 기본
+# QoS(VOLATILE)면 구독자 없을 때 나간 메시지는 그냥 사라져서, 첫 이동 명령이
+# 유실되고 MOVE_TIMEOUT_SEC(30초)이 지나서야 재전송으로 겨우 움직이는 문제가
+# 있었다 — TRANSIENT_LOCAL로 바꿔서 fleet_driver가 늦게 구독해도 그 사이
+# 발행분을 그대로 받게 한다(fleet_driver.py도 반드시 같은 QoS로 맞춰야 함).
+_COMMAND_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+)
 
 MOVE_TIMEOUT_SEC = 30.0
 # 매 왕복마다 끝점에서 머무는 시간을 무작위로 줘서, 두 로봇이 교차점 근처에서
@@ -57,7 +72,7 @@ class CrossingTestFMS(Node):
         self.robots = {}
         self._blocked_since = {}  # robot_id -> 마지막 대기 로그를 찍은 시각
 
-        self.command_pub = self.create_publisher(String, "/fms/commands", 10)
+        self.command_pub = self.create_publisher(String, "/fms/commands", _COMMAND_QOS)
         self.create_subscription(String, "/amr/status", self._on_robot_status, 10)
 
         for robot_id, home_node in ROBOT_HOME_NODE.items():
