@@ -145,6 +145,15 @@ class FleetManagementSystem(Node):
         super().__init__("fleet_management_system")
         self.robots = {}
         self.node_locks = {node_id: None for node_id in NODE_GRAPH}
+        # 실제 상태 메시지(특히 최초 "BOOT" idle 알림)가 DDS 디스커버리 타이밍에
+        # 따라 유실될 수 있어서(launch 파일의 지연 시작도 이 위험을 줄일 뿐 완전히
+        # 없애지는 못한다), 로봇이 실제로 보고해오길 기다리지 않고 config에 정의된
+        # 모든 로봇을 시작하자마자 바로 등록한다 — 그래야 홈 슬롯이 처음부터
+        # 확실하게 점유 상태로 잡혀서, 스폰 직후 상태를 다른 로봇이 "비어있다"고
+        # 오판해 충돌하는 일이 없다(실제로 한 바퀴 돌고 온 로봇이 아직 스폰
+        # 위치에 그대로 있는 다른 로봇과 충돌하는 문제가 있었다).
+        for _robot_id in ROBOT_SHOE_TYPE:
+            self.register_robot(_robot_id)
         # 종류별로 독립된 큐 — 담당 로봇에게만 배정되므로 큐도 종류별로 나눈다.
         self.task_queues = {shoe_type: [] for shoe_type in SHOE_TYPES}
         self._rr_offset = 0  # 다음 홉 배정 시 순회 시작점을 매 tick 회전(기아 방지)
@@ -479,6 +488,32 @@ class FleetManagementSystem(Node):
                 # 지금 이 시점에 보내는 걸로 바꿔서, 홈 슬롯이 어디든 상관없이
                 # 트립이 시작되면 항상 한 번은 보내지도록 한다.
                 self._publish_amr_ready(best_robot_id, robot)
+
+        # 1.5) 픽업 대기열 앞당기기 — 메인 컨트롤에서 새 작업 지시가 없어도(=
+        # 위 1번에서 아무도 배정 못 받았어도), PICKUP_X가 비어있고 그 바로 뒤
+        # 대기 슬롯(PICKUP_WAIT_X, WAIT2_X, ...)에 idle 로봇이 있으면 한 칸
+        # 앞으로 당긴다 — 실제 대기줄이 맨 앞이 빌 때마다 자연스럽게 당겨지는
+        # 것과 같은 동작이다. 이러면 다음 배치가 왔을 때 이미 PICKUP_X에
+        # 로봇이 대기 중이라 더 빨리 실어줄 수 있다. 위 1번에서 실제 트립을
+        # 배정받은 로봇은 이미 state가 idle이 아니게 됐으니 여기서 다시
+        # 건드리지 않는다.
+        for shoe_type in SHOE_TYPES:
+            chain = [PICKUP_NODE[shoe_type]] + PICKUP_WAIT_SLOTS[shoe_type]
+            for front, back in zip(chain, chain[1:]):
+                if self.node_locks.get(front) is not None:
+                    continue  # 앞자리가 이미 차있으면 당길 필요 없음
+                back_holder = self.node_locks.get(back)
+                if back_holder is None:
+                    continue
+                robot = self.robots.get(back_holder)
+                if robot is None or robot["state"] != "idle":
+                    continue
+                advance_path = shortest_path(back, front)
+                if advance_path:
+                    robot["path"] = advance_path
+                    robot["path_idx"] = 0
+                    robot["state"] = "waiting_next_hop"
+                    self.get_logger().info(f"[{back_holder}] 대기열 앞당김: {back} → {front}")
 
         # 2) 다음 홉 이동 시도 (노드 예약제/Mutex 핵심 로직)
         #    매 tick마다 순회 시작 로봇을 한 칸씩 돌려서, 특정 로봇이 계속 우선권을
