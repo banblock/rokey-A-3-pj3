@@ -8,9 +8,11 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, image_msgs
 from cv_bridge import CvBridge
 import numpy as np
+import cv2
+import time
 
 from recycle_interfaces.msg import ShoeInspectionResult
 
@@ -79,6 +81,8 @@ class VisionNode(Node):
         )
 
         self.get_logger().info(f'Vision node initialized (model: {self.model_path})')
+
+        self.pub_result_img = self.create_publisher(Image, '/vision/result_img', 10)
 
     # ------------------------------------------------------------------
     def _load_model(self):
@@ -220,11 +224,13 @@ class VisionNode(Node):
     #     }
     #     return left_result, right_result
 
-    def _infer_pair(self, image_msgs: list):
+def _infer_pair(self, image_msgs: list):
     # """켤레(sneakers_0) 하나로 탐지, tear는 그 박스와 겹치는지로 판단."""
         shoe_found = False
         shoe_best_conf = 0.0
         has_tear = False
+        
+        all_detections = []  #모든 프레임의 탐지 결과를 모을 빈 리스트 생성
 
         for msg in image_msgs:
             if msg is None:
@@ -236,6 +242,8 @@ class VisionNode(Node):
                 continue
 
             dets = self._run_inference(cv_image)
+            
+            all_detections.extend(dets)  #현재 프레임의 탐지 결과를 전체 리스트에 누적
 
             shoe_pair = self._best_shoe_pair_det(dets)
 
@@ -267,6 +275,7 @@ class VisionNode(Node):
             'shoe_found': shoe_found,
             'has_tear': has_tear,
             'confidence': shoe_best_conf,
+            'detections': all_detections  #_publish_result로 전달하기 위해 result에 추가
         }
         return result
 
@@ -346,9 +355,11 @@ class VisionNode(Node):
             verbose=False,
         )
 
-        import cv2
-        import time
+
         annotated = results[0].plot()
+        img_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
+        self.pub_result_img.publish(img_msg)
+
         debug_path = f'/home/rokey/debug_inference/debug_inference_{time.time()}.png'
         cv2.imwrite(debug_path, annotated)
 
@@ -471,12 +482,20 @@ class VisionNode(Node):
     def _publish_result(self, result: dict, judgement: dict):
         msg = ShoeInspectionResult()
         msg.discard = judgement['discard']
-        msg.color = 0  # TODO: OpenCV 색상 판정 추가 후 채울 것
-        msg.size = 240    # TODO: cam3 seg 기반 사이즈 측정 추가 후 채울 것
+        msg.color = 0  # TODO: OpenCV 색상 판정
+        msg.size = 240 # TODO: cam3 seg 기반 사이즈 측정
+
+        # ----------------------------------------------------
+        # _infer_pair에서 넘어온 result 딕셔너리에서 Bbox 정보 추출
+        # ----------------------------------------------------
+        # 퍼블리시할 때 cam1, cam2 결과를 전부 보내고 싶다면 all_detections 사용
+        dets = result.get('all_detections', [])
+        
+
         self.pub_result.publish(msg)
 
         self.get_logger().info(
-            f"[RESULT] discard={judgement['discard']}, reason={judgement['reason']}"
+            f"[RESULT] discard={judgement['discard']}, reason={judgement['reason']}, found_defects={len(dets)}"
         )
 
 
