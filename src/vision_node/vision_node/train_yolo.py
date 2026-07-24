@@ -14,12 +14,12 @@ from ultralytics import YOLO
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="convert_sdg_to_yolo.py가 생성한 data.yaml 경로")
-    ap.add_argument("--model", default="yolo11s-seg.pt", help="yolo11n/s/m-seg.pt 중 선택")
+    ap.add_argument("--model", default="yolo26m-seg.pt", help="yolo11n/s/m-seg.pt 중 선택")
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--imgsz", type=int, default=960, help="학습 해상도 (원본 1440은 학습 속도상 과함)")
-    ap.add_argument("--batch", type=int, default=16)
+    ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--project", default="runs_shoe_seg")
-    ap.add_argument("--name", default="v1")
+    ap.add_argument("--name", default="v2")
     a = ap.parse_args()
 
     model = YOLO(a.model)

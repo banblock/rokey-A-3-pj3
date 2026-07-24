@@ -6,8 +6,11 @@ Isaac Sim Replicator - 신발 정상/훼손 2클래스 합성 데이터 생성 (
 ->  이 스크립트로 데이터 생성  ->  convert_sdg_to_yolo.py 로 YOLO-seg 포맷 변환
     ->  train_yolo_seg.py 로 학습
 
-카메라는 일단 1대(cam1)만 사용. 파이프라인 검증되면 cam2/cam3 다시 붙이면 됨
-(지금은 변수를 줄이는 게 우선).
+카메라는 우리가 새로 만들지 않고, 스테이지에 이미 있는 실제 D455_1/D455_2 카메라
+프림(ROS2로 /d455_1, /d455_2/color/image_raw를 발행하는 바로 그 카메라)을 그대로
+가져다 render_product로 쓴다 (CAMERA_PRIM_PATHS 참고). 카메라가 2대라 출력이
+<out>/<cam_name>/rgb/, <out>/<cam_name>/instance_segmentation/ 형태의 서브폴더
+구조로 나뉘며, convert_sdg_to_yolo.py도 이 구조를 인식하도록 되어 있다.
 
 STAGE_PATH(실제 컨베이어 환경)를 열어서 그 안의 조명/바닥 재질은 그대로 두고
 PLACEMENT_AREA_MIN/MAX(실측 좌표) 범위 안에서 신발만 겹치지 않게 배치한다.
@@ -34,12 +37,12 @@ import os
 import random
 
 import carb.settings
+import numpy as np
 import omni.replicator.core as rep
 import omni.timeline
 import omni.usd
 from isaacsim.core.utils.semantics import add_labels
-from PIL import Image, ImageDraw
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
 
 random.seed(args.seed)
 rep.set_global_seed(args.seed)
@@ -49,7 +52,9 @@ rep.set_global_seed(args.seed)
 # ------------------------------------------------------------------------
 
 OUTPUT_DIR = "/home/rokey/cobot3_ws/src/vision_node/_out_shoe_sdg"
-RESOLUTION = (640, 640)
+# 실제 D455 컬러 카메라 aspect(horizontalAperture/verticalAperture ≈ 3.896/2.453 ≈ 1.59)에 맞춤.
+# D455 컬러 스트림 실제 해상도(1280x800)에 가깝게 올림.
+RESOLUTION = (1280, 805)
 
 # 실제 컨베이어 환경 stage. 이 안에 이미 벨트/조명/AMR 등이 다 구성되어 있어서
 # new_stage()로 빈 스테이지를 만들지 않고 이걸 그대로 연다.
@@ -58,19 +63,24 @@ STAGE_PATH = "/home/rokey/cobot3_ws/isaacpjt/stage_v10z/stage_v10.usd"
 # 실측 컨베이어 배치 영역 (4개 코너 좌표에서 X/Y 범위만 추출, Z는 고정)
 PLACEMENT_AREA_MIN = (-1.38818, 2.42414)
 PLACEMENT_AREA_MAX = (-1.13057, 3.0775)
-PLACEMENT_Z = 1.90685
+PLACEMENT_Z = 1.89
 
 SHOE_ASSET_URL = "/home/rokey/Downloads/sneaker_240.usd"
 
 NUM_SHOES_PER_FRAME = 2      # 한 프레임에 흩뿌릴 신발 켤레 수 (좁은 컨베이어라 2켤레로 축소)
-DEFECT_RATIO = 1           # 훼손 비율 (클래스 균형용, 필요시 조정)
-CLASSES = ["normal", "defect"]
+DEFECT_RATIO = 0.7        # 훼손(tear 또는 scratch) 비율 (클래스 균형용, 필요시 조정)
+# "shoe"는 신발 전체(항상 부여, 정상/훼손 구분 없음). tear/scratch는 훼손 부위에 실제로
+# 만드는 별도의 작은 프림(패치)에 붙이는 라벨이라, bbox/segmentation이 훼손 부위만 잡는다.
+# (GeomSubset에 라벨을 걸어봤는데 Replicator의 instance_segmentation/bbox 애노테이터가
+# subset 단위 시맨틱을 인식하지 못해서, 실제 프림으로 바꿈)
+CLASSES = ["shoe", "tear", "scratch"]
 
-# defect 재질에 입힐 tear/scratch 절차적 텍스처. 색은 normal과 동일 베이스에 찢어짐/
-# 긁힘 패턴만 얹는다. 매번 다른 패턴을 쓰도록 몇 개를 미리 생성해 랜덤으로 고른다.
-DEFECT_TEXTURE_DIR = "/home/rokey/cobot3_ws/src/vision_node/_defect_textures"
-DEFECT_TEXTURE_COUNT = 6
-DEFECT_TEXTURE_SIZE = 1024
+# tear(구멍 자리 어두운 패치)/scratch(긁힌 자국 밝은 패치) 모양 크기.
+# tear는 cut_faces_near_random_point의 반경과 반드시 맞춰야 구멍 크기와 패치 크기가 일치함.
+TEAR_RX_VALUE = 0.02
+TEAR_RY_RATIO_RANGE = (0.4, 0.6)
+SCRATCH_LENGTH_RANGE = (0.06, 0.16)     # bbox 대각선 대비 비율
+SCRATCH_WIDTH_RATIO_RANGE = (0.15, 0.25)  # 길이 대비 두께 비율
 
 # 페어를 자유롭게(0~360도) 회전시키면 가로 폭(0.354m)이 세로로 눕혀지면서 옆 구간을
 # 침범해 겹침이 생긴다. 벨트 방향(0도) 근처로만 살짝 흔들어서 Y 방향 차지 폭을 좁게 유지.
@@ -81,16 +91,12 @@ YAW_JITTER_DEG = 10
 # subframe을 넉넉히 줘서 매 프레임 캡처 전에 확실히 수렴하게 한다.
 RT_SUBFRAMES = 16
 
-# 배치 영역 정중앙 위에서 수직으로 내려다보는 탑뷰.
-# 로컬 무회전(0,0,0)이 이미 -Z(아래쪽)을 보는 방향이라 회전 불필요.
-_CAM_CENTER_X = (PLACEMENT_AREA_MIN[0] + PLACEMENT_AREA_MAX[0]) / 2
-_CAM_CENTER_Y = (PLACEMENT_AREA_MIN[1] + PLACEMENT_AREA_MAX[1]) / 2
-CAMERAS = {
-    "cam1": {
-        "position": (_CAM_CENTER_X, _CAM_CENTER_Y, PLACEMENT_Z + 2.3),
-        "rotation": (0.0, 0.0, 0.0),
-        "focal_length": 35.0,
-    },
+# 우리가 임의로 만든 탑뷰 카메라 대신, 스테이지에 이미 있는 실제 D455 카메라 리그를
+# 그대로 쓴다 (ROS2로 /d455_1, /d455_2/color/image_raw를 발행하는 바로 그 카메라).
+# 위치/각도를 우리가 새로 잡을 필요 없이 실제 물리 카메라 시점 그대로 캡처된다.
+CAMERA_PRIM_PATHS = {
+    "D455_1": "/World/camera/D455_1/Sensor/RSD455/Camera_OmniVision_OV9782_Color",
+    "D455_2": "/World/camera/D455_2/Sensor/RSD455/Camera_OmniVision_OV9782_Color",
 }
 
 
@@ -123,98 +129,198 @@ def make_material(stage, path, color, roughness):
     return material
 
 
-def generate_tear_scratch_texture(path, seed, base_color=(255, 64, 64)):
-    """찢어짐(굵고 어두운 지그재그 선) + 긁힘(얇고 밝은 직선) 패턴을 절차적으로 그려서
-    base_color 위에 합성한 텍스처를 저장한다. 실제 손상 사진이 없어도 UV 위에 바로 쓸 수 있음."""
-    rng = random.Random(seed)
-    size = DEFECT_TEXTURE_SIZE
-    img = Image.new("RGB", (size, size), base_color)
-    draw = ImageDraw.Draw(img)
-
-    dark = tuple(max(0, c - 150) for c in base_color)
-    light = tuple(min(255, c + 70) for c in base_color)
-
-    # tear: 지그재그로 꺾이는 굵은 어두운 선 + 가장자리 밝은 하이라이트
-    for _ in range(rng.randint(2, 4)):
-        x, y = rng.uniform(0, size), rng.uniform(0, size)
-        angle = rng.uniform(0, 2 * math.pi)
-        length = rng.uniform(size * 0.09, size * 0.21)
-        steps = rng.randint(6, 10)
-        points = [(x, y)]
-        for _ in range(steps):
-            angle += rng.uniform(-0.5, 0.5)
-            step_len = length / steps
-            x += math.cos(angle) * step_len
-            y += math.sin(angle) * step_len
-            points.append((x, y))
-        width = rng.randint(int(size * 0.003), int(size * 0.008))
-        draw.line(points, fill=dark, width=width, joint="curve")
-        draw.line(points, fill=light, width=max(1, width // 3))
-
-    # scratch: 짧고 얇은 직선 여러 개
-    for _ in range(rng.randint(3, 6)):
-        x1, y1 = rng.uniform(0, size), rng.uniform(0, size)
-        angle = rng.uniform(0, 2 * math.pi)
-        length = rng.uniform(size * 0.04, size * 0.125)
-        x2, y2 = x1 + math.cos(angle) * length, y1 + math.sin(angle) * length
-        draw.line([(x1, y1), (x2, y2)], fill=light, width=rng.randint(1, max(2, int(size * 0.002))))
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    img.save(path)
-
-
-def make_textured_material(stage, path, texture_path, roughness):
-    """diffuseColor를 상수 대신 UV 텍스처 파일로 연결하는 UsdPreviewSurface 재질."""
-    material = UsdShade.Material.Define(stage, path)
-    shader = UsdShade.Shader.Define(stage, path.AppendPath("Shader"))
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
-    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
-
-    st_reader = UsdShade.Shader.Define(stage, path.AppendPath("stReader"))
-    st_reader.CreateIdAttr("UsdPrimvarReader_float2")
-    st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
-    st_reader.CreateOutput("result", Sdf.ValueTypeNames.Float2)
-
-    tex = UsdShade.Shader.Define(stage, path.AppendPath("DiffuseTexture"))
-    tex.CreateIdAttr("UsdUVTexture")
-    tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(texture_path)
-    tex.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
-    tex.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
-    # 텍스처 파일은 기본적으로 sRGB로 해석되어 렌더러가 linear로 변환하는데, 우리 PNG의
-    # RGB 값은 이미 상수 재질(diffuseColor)과 같은 값으로 만들어둔 것이라 raw로 읽어야
-    # normal 재질과 같은 색으로 보인다 (sRGB 디코드 시 채도가 과하게 높아지는 문제 있었음).
-    tex.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set("raw")
-    tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st_reader.ConnectableAPI(), "result")
-    tex.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
-
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(tex.ConnectableAPI(), "rgb")
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-    return material
-
-
 def create_condition_materials(stage):
-    # normal: 지정된 단색(1.0, 0.25, 0.25)
-    # defect: 같은 베이스 색 위에 tear/scratch 절차적 텍스처를 입힌 변형 여러 개 중 랜덤 선택
-    normal_mat = make_material(stage, Sdf.Path("/World/Looks/ShoeNormal"), (1.0, 0.25, 0.25), 0.55)
-
-    defect_mats = []
-    for i in range(DEFECT_TEXTURE_COUNT):
-        tex_path = os.path.join(DEFECT_TEXTURE_DIR, f"defect_{i}.png")
-        generate_tear_scratch_texture(tex_path, seed=args.seed * 1000 + i)
-        defect_mats.append(
-            make_textured_material(stage, Sdf.Path(f"/World/Looks/ShoeDefect_{i}"), tex_path, 0.9)
-        )
-
-    return {"normal": normal_mat, "defect": defect_mats}
+    # normal: 신발 전체 기본 색. tear/scratch 패치는 이제 실제 별도 프림이라, 각자
+    # 자기 재질(어두운 색/밝은 색)을 그 작은 패치에만 바른다 (신발 몸체는 항상 normal).
+    base_color = (1.0, 0.25, 0.25)
+    normal_mat = make_material(stage, Sdf.Path("/World/Looks/ShoeNormal"), base_color, 0.55)
+    tear_mat = make_material(stage, Sdf.Path("/World/Looks/TearPatch"), tuple(max(0, c - 0.85) for c in base_color), 0.9)
+    scratch_mat = make_material(stage, Sdf.Path("/World/Looks/ScratchPatch"), tuple(max(0, c - 0.85) for c in base_color), 0.9)
+    return {"normal": normal_mat, "tear": tear_mat, "scratch": scratch_mat}
 
 
-def bind_material_recursive(prim, material):
-    """부모 Xform에 바인딩하면 하위 mesh의 기존 바인딩에 안 먹힐 수 있어서
-    실제 mesh 프림들을 순회하며 직접 바인딩한다."""
-    for desc in Usd.PrimRange(prim):
-        if desc.IsA(UsdGeom.Mesh):
-            UsdShade.MaterialBindingAPI(desc).Bind(material)
+def _cache_mesh_topology(mesh):
+    """면 삭제로 구멍을 냈다가 'normal'로 돌아갈 때 원래 모양으로 복구할 수 있도록,
+    스폰 시점(아직 아무것도 자르기 전)의 원본 위상 정보를 한 번만 캐싱해둔다.
+    face centroid도 여기서 미리 계산해서, 매 프레임 반복되는 절단 연산은 numpy로 가볍게 만든다."""
+    counts = np.array(mesh.GetFaceVertexCountsAttr().Get(), dtype=np.int64)
+    indices = np.array(mesh.GetFaceVertexIndicesAttr().Get(), dtype=np.int64)
+    points = np.array(mesh.GetPointsAttr().Get(), dtype=np.float64)
+
+    offsets = np.concatenate(([0], np.cumsum(counts)))
+    centroids = np.array([
+        points[indices[offsets[i]:offsets[i + 1]]].mean(axis=0) for i in range(len(counts))
+    ])
+
+    # 각 면 자체의 정점 순서(winding)로 구한 "진짜" 법선. PCA 법선은 이웃 면들의
+    # 분산으로 축만 구하는 거라 부호(안/밖)가 seed마다 무작위로 나오는데, 이 면
+    # 법선은 winding이 고정이라 부호가 항상 같은 쪽(Hydra가 렌더링에 쓰는 쪽)을
+    # 가리킨다. PCA 법선의 부호를 여기에 맞춰 고정하는 데 쓴다.
+    face_normals = np.zeros_like(centroids)
+    for i in range(len(counts)):
+        verts = indices[offsets[i]:offsets[i + 1]]
+        if len(verts) >= 3:
+            p0, p1, p2 = points[verts[0]], points[verts[1]], points[verts[2]]
+            n = np.cross(p1 - p0, p2 - p0)
+            norm = np.linalg.norm(n)
+            if norm > 1e-12:
+                face_normals[i] = n / norm
+
+    st_primvar = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st")
+    st_indices = None
+    if st_primvar and st_primvar.IsIndexed():
+        st_indices = np.array(st_primvar.GetIndices(), dtype=np.int64)
+
+    return {
+        "counts": counts,
+        "indices": indices,
+        "centroids": centroids,
+        "face_normals": face_normals,
+        "st_primvar": st_primvar,
+        "st_indices": st_indices,
+    }
+
+
+def _local_tangent_frame(centroids, seed, rng, rough_radius_range, ref_normal=None):
+    """centroids[seed] 근처 면들의 국소 접평면(PCA)을 구해 그 지점의 두 접선축
+    (axis1, axis2)과 법선축(normal, 분산이 가장 작은 축), 국소 이웃 마스크를 반환한다.
+    tear(구멍)와 scratch(패치) 둘 다 이 프레임 위에서 위치/모양을 계산한다.
+
+    PCA로 구한 normal은 축만 정해지고 부호(안/밖)는 SVD가 임의로 정해서 seed마다
+    무작위로 뒤집힐 수 있다. ref_normal(그 seed 면 자체의 winding 기반 법선)을 주면
+    그 방향과 같은 쪽을 향하도록 부호를 고정한다 — 안 그러면 패치 오프셋이 표면
+    안쪽으로 들어가 카메라에서 가려지는 경우가 생긴다."""
+    bbox_size = centroids.max(axis=0) - centroids.min(axis=0)
+    scale = float(np.linalg.norm(bbox_size))
+    rough_radius = scale * rng.uniform(*rough_radius_range)
+
+    dists = np.linalg.norm(centroids - centroids[seed], axis=1)
+    local_mask = dists < rough_radius
+    centered = centroids[local_mask] - centroids[seed]
+    # PCA: 분산이 큰 두 축 = 이 지점의 국소 접평면, 가장 작은 축 = 법선
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    axis1, axis2, normal = vt[0], vt[1], vt[2]
+    if ref_normal is not None and np.dot(normal, ref_normal) < 0:
+        normal = -normal
+    return axis1, axis2, normal, local_mask, scale
+
+
+def cut_faces_near_random_point(mesh, topo, rng):
+    """topo에 캐싱된 원본 위상에서, 무작위로 고른 한 면 근처를 타원형 경계로 잘라
+    제외하고 재구성해서 실제로 구멍이 뚫린 것처럼 만든다. 단순 구형 반경 대신, 시드
+    주변 면들의 국소 평면(PCA)을 구해 그 평면 위에서 타원 판정을 하기 때문에 표면
+    곡률을 따라 자연스러운 타원 형태가 나온다 (면 자체가 크면 여전히 각질 수 있음).
+    faceVertexIndices뿐 아니라 같은 face-corner 순서를 공유하는 st(UV) 인덱스도
+    같이 걸러줘야 어긋나지 않는다.
+
+    반환값: (center, axis1, axis2, normal, rx, ry) — 이 자리에 tear 패치 프림을
+    똑같은 크기/방향으로 만들기 위한 정보."""
+    counts, indices, centroids = topo["counts"], topo["indices"], topo["centroids"]
+    n_faces = len(counts)
+    seed = rng.randrange(n_faces)
+
+    # 지금 tear 패치처럼 자연스럽게 둥글어 보이려면 경계에 걸치는 면이 충분히 많아야
+    # 해서(면이 크면 어차피 각질 수밖에 없음), 이전보다 크게 잡는다.
+    axis1, axis2, normal, _, scale = _local_tangent_frame(
+        centroids, seed, rng, rough_radius_range=(0.05, 0.07), ref_normal=topo["face_normals"][seed])
+
+    rel = centroids - centroids[seed]
+    proj1 = rel @ axis1
+    proj2 = rel @ axis2
+
+    rx = scale * TEAR_RX_VALUE
+    ry = rx * rng.uniform(*TEAR_RY_RATIO_RANGE)
+    ellipse_t = (proj1 / rx) ** 2 + (proj2 / ry) ** 2
+    keep_face = ellipse_t > 1.0
+    if not keep_face.any():   # 전부 사라지는 극단적인 경우 방지
+        keep_face[:] = True
+
+    corner_mask = np.repeat(keep_face, counts)
+    new_counts = counts[keep_face]
+    new_indices = indices[corner_mask]
+    mesh.GetFaceVertexCountsAttr().Set(new_counts.tolist())
+    mesh.GetFaceVertexIndicesAttr().Set(new_indices.tolist())
+
+    if topo["st_indices"] is not None:
+        topo["st_primvar"].SetIndices(Vt.IntArray(topo["st_indices"][corner_mask].tolist()))
+
+    return centroids[seed], axis1, axis2, normal, rx, ry
+
+
+def pick_scratch_placement(topo, rng):
+    """원본 위상(잘라내지 않음)에서 무작위 지점 근처의 국소 접평면을 구해, scratch
+    패치를 놓을 위치/방향/길이/두께를 정한다. 면을 제거하지는 않는다."""
+    centroids = topo["centroids"]
+    n_faces = len(centroids)
+    seed = rng.randrange(n_faces)
+
+    axis1, axis2, normal, _, scale = _local_tangent_frame(
+        centroids, seed, rng, rough_radius_range=(0.08, 0.12), ref_normal=topo["face_normals"][seed])
+    angle = rng.uniform(0, 2 * math.pi)
+    dir_axis = axis1 * math.cos(angle) + axis2 * math.sin(angle)
+    side_axis = -axis1 * math.sin(angle) + axis2 * math.cos(angle)
+
+    length = scale * rng.uniform(*SCRATCH_LENGTH_RANGE)
+    width = length * rng.uniform(*SCRATCH_WIDTH_RATIO_RANGE)
+    return centroids[seed], dir_axis, side_axis, normal, length, width
+
+
+def _make_ellipse_patch(stage, path, sides=16):
+    """tear 패치용으로 매 프레임 위치/모양을 갱신할, 부채꼴(fan) 삼각분할 원반 프림을
+    한 번만 만들어둔다 (점/면 개수는 고정, 점 좌표만 매 프레임 다시 Set)."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0)] * (sides + 1))
+    counts = [3] * sides
+    indices = []
+    for i in range(sides):
+        indices += [0, 1 + i, 1 + (i + 1) % sides]
+    mesh.GetFaceVertexCountsAttr().Set(counts)
+    mesh.GetFaceVertexIndicesAttr().Set(indices)
+    return mesh
+
+
+# 패치를 표면과 완전히 같은 높이에 놓으면 원본 메시 면과 겹쳐 z-fighting(깜빡임)이
+# 날 수 있어서, 법선 방향으로 아주 살짝(0.5mm) 띄운다.
+_PATCH_OFFSET = 0.0005
+
+
+def _update_ellipse_patch(mesh, center, axis1, axis2, normal, rx, ry, sides=16):
+    base = center + normal * _PATCH_OFFSET
+    points = [Gf.Vec3f(*base)]
+    for i in range(sides):
+        theta = 2 * math.pi * i / sides
+        p = base + axis1 * (rx * math.cos(theta)) + axis2 * (ry * math.sin(theta))
+        points.append(Gf.Vec3f(*p))
+    mesh.GetPointsAttr().Set(points)
+
+
+def _make_rect_patch(stage, path):
+    """scratch 패치용 사각형(quad) 프림을 한 번만 만들어둔다."""
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.GetPointsAttr().Set([Gf.Vec3f(0, 0, 0)] * 4)
+    mesh.GetFaceVertexCountsAttr().Set([4])
+    mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, 3])
+    return mesh
+
+
+def _update_rect_patch(mesh, center, dir_axis, side_axis, normal, length, width):
+    base = center + normal * _PATCH_OFFSET
+    half_l, half_w = length / 2, width / 2
+    corners = [
+        base - dir_axis * half_l - side_axis * half_w,
+        base + dir_axis * half_l - side_axis * half_w,
+        base + dir_axis * half_l + side_axis * half_w,
+        base - dir_axis * half_l + side_axis * half_w,
+    ]
+    mesh.GetPointsAttr().Set([Gf.Vec3f(*p) for p in corners])
+
+
+def restore_mesh_topology(mesh, topo):
+    """'normal'로 돌아갈 때 스폰 시점의 원본 위상으로 되돌린다."""
+    mesh.GetFaceVertexCountsAttr().Set(topo["counts"].tolist())
+    mesh.GetFaceVertexIndicesAttr().Set(topo["indices"].tolist())
+    if topo["st_indices"] is not None:
+        topo["st_primvar"].SetIndices(Vt.IntArray(topo["st_indices"].tolist()))
 
 
 def spawn_shoes(stage, materials):
@@ -232,7 +338,29 @@ def spawn_shoes(stage, materials):
         if env_light.IsValid():
             env_light.SetActive(False)
 
-        prims.append(prim)
+        meshes = [UsdGeom.Mesh(desc) for desc in Usd.PrimRange(prim) if desc.IsA(UsdGeom.Mesh)]
+        mesh_entries = []
+        for m in meshes:
+            # tear/scratch 훼손 부위만 따로 bbox/segmentation이 잡히도록, 실제 별도 프림
+            # (패치)을 하나씩 만들어두고 매 프레임 모양/위치/보임여부만 갱신한다.
+            # 패치를 메시 프림의 자식으로 둬서, 메시 로컬 좌표(centroid 등)를 그대로 쓸 수
+            # 있게 한다 (형제로 두면 메시 자체의 로컬 변환까지 따로 계산해야 함).
+            tear_patch = _make_ellipse_patch(stage, m.GetPath().AppendChild("TearPatch"))
+            scratch_patch = _make_rect_patch(stage, m.GetPath().AppendChild("ScratchPatch"))
+            UsdShade.MaterialBindingAPI(tear_patch).Bind(materials["tear"])
+            UsdShade.MaterialBindingAPI(scratch_patch).Bind(materials["scratch"])
+            add_labels(tear_patch.GetPrim(), labels=["tear"], instance_name="class")
+            add_labels(scratch_patch.GetPrim(), labels=["scratch"], instance_name="class")
+            UsdGeom.Imageable(tear_patch).MakeInvisible()
+            UsdGeom.Imageable(scratch_patch).MakeInvisible()
+            mesh_entries.append({
+                "mesh": m,
+                "topo": _cache_mesh_topology(m),
+                "tear_patch": tear_patch,
+                "scratch_patch": scratch_patch,
+            })
+
+        prims.append({"prim": prim, "meshes": mesh_entries})
     return prims
 
 
@@ -251,26 +379,49 @@ def compute_belt_segments(n):
     return segments
 
 
-def randomize_shoe(prim, materials, y_segment):
+def randomize_shoe(shoe, materials, y_segment):
+    prim = shoe["prim"]
     x = random.uniform(PLACEMENT_AREA_MIN[0], PLACEMENT_AREA_MAX[0])
     y = random.uniform(*y_segment)
 
     yaw = random.uniform(-YAW_JITTER_DEG, YAW_JITTER_DEG)
     set_transform(prim, location=(x, y, PLACEMENT_Z), rotation=(0, 0, yaw))
 
-    label = "defect" if random.random() < DEFECT_RATIO else "normal"
-    material = random.choice(materials["defect"]) if label == "defect" else materials["normal"]
-    bind_material_recursive(prim, material)
+    # "shoe"는 훼손 여부와 무관하게 신발 전체에 항상 붙는 라벨 (정상/훼손 구분 없음).
     # add_labels는 이전 'class' 라벨을 덮어쓰므로 매 프레임 재호출해도 안전함
-    add_labels(prim, labels=[label], instance_name="class")
+    add_labels(prim, labels=["shoe"], instance_name="class")
+
+    has_damage = random.random() < DEFECT_RATIO
+    damage_type = random.choice(["tear", "scratch"]) if has_damage else None
+
+    for entry in shoe["meshes"]:
+        mesh, topo = entry["mesh"], entry["topo"]
+        tear_patch, scratch_patch = entry["tear_patch"], entry["scratch_patch"]
+
+        # 항상 원본 위상에서 다시 시작해야 tear가 누적으로 계속 뚫리지 않는다.
+        restore_mesh_topology(mesh, topo)
+        UsdShade.MaterialBindingAPI(mesh).Bind(materials["normal"])   # 신발 몸체 기본 재질
+
+        UsdGeom.Imageable(tear_patch).MakeInvisible()
+        UsdGeom.Imageable(scratch_patch).MakeInvisible()
+
+        if damage_type == "tear":
+            center, axis1, axis2, normal, rx, ry = cut_faces_near_random_point(mesh, topo, random)
+            _update_ellipse_patch(tear_patch, center, axis1, axis2, normal, rx, ry)
+            UsdGeom.Imageable(tear_patch).MakeVisible()
+        elif damage_type == "scratch":
+            center, dir_axis, side_axis, normal, length, width = pick_scratch_placement(topo, random)
+            _update_rect_patch(scratch_patch, center, dir_axis, side_axis, normal, length, width)
+            UsdGeom.Imageable(scratch_patch).MakeVisible()
 
 
 def build_cameras(stage):
+    """새 카메라를 만들지 않고, 스테이지에 이미 있는 실제 D455 카메라 프림을 그대로 가져온다."""
     cams = {}
-    for name, cfg in CAMERAS.items():
-        cam_prim = stage.DefinePrim(f"/World/Cameras/{name}", "Camera")
-        cam_prim.GetAttribute("focalLength").Set(cfg["focal_length"])
-        set_transform(cam_prim, location=cfg["position"], rotation=cfg["rotation"])
+    for name, path in CAMERA_PRIM_PATHS.items():
+        cam_prim = stage.GetPrimAtPath(path)
+        if not cam_prim.IsValid():
+            raise RuntimeError(f"카메라 프림을 찾을 수 없음: {path}")
         cams[name] = cam_prim
     return cams
 
@@ -310,8 +461,8 @@ def run():
     # 제대로 안 나올 수 있어서(0000 프레임에서 회색으로 나온 원인), writer를 붙이기 전에
     # 워밍업 스텝을 한 번 돌려 셰이더가 준비된 뒤에 실제 캡처를 시작한다.
     print("[SDG] step: warm-up (shader compile)", flush=True)
-    for prim, y_segment in zip(shoe_prims, belt_segments):
-        randomize_shoe(prim, materials, y_segment)
+    for shoe, y_segment in zip(shoe_prims, belt_segments):
+        randomize_shoe(shoe, materials, y_segment)
     rep.orchestrator.step(rt_subframes=RT_SUBFRAMES, delta_time=0.0)
 
     writer = rep.writers.get("BasicWriter")
@@ -326,8 +477,8 @@ def run():
     writer.attach(render_products)
 
     for i in range(args.num_frames):
-        for prim, y_segment in zip(shoe_prims, belt_segments):
-            randomize_shoe(prim, materials, y_segment)
+        for shoe, y_segment in zip(shoe_prims, belt_segments):
+            randomize_shoe(shoe, materials, y_segment)
 
         print(f"[SDG] Capturing frame {i + 1}/{args.num_frames}", flush=True)
         rep.orchestrator.step(rt_subframes=RT_SUBFRAMES, delta_time=0.0)
