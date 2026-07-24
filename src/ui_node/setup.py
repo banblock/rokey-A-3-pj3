@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'conveyor_control'
+package_name = 'ui_node'
 
 setup(
     name=package_name,
@@ -23,9 +23,8 @@ setup(
         ],
     },
     entry_points={
-    "console_scripts": [
-        "conveyor_controller = conveyor_control.conveyor_controller:main",
-        "shoe_detector = conveyor_control.shoe_detector:main",
-    ],
-},
+        'console_scripts': [
+            'ui = ui_node.ui:main'
+        ],
+    },
 )
