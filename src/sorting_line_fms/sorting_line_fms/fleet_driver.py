@@ -82,7 +82,7 @@ WAYPOINT_RADIUS_M = 0.35
 # is_final=True로 이미 K_LINEAR*distance 감속이 걸림)에서 생기는 거라 여기서
 # 따로 손 쓸 필요가 없었다. WAYPOINT_RADIUS_M을 넉넉하게 키운 지금은 세분화
 # 칸에서 감속 없이 최고 속도를 계속 유지한다.
-MAX_LINEAR_MPS = 0.6
+MAX_LINEAR_MPS = 1.0
 MAX_ANGULAR_RPS = 1.2
 K_LINEAR = 0.8
 K_ANGULAR = 1.5
@@ -152,9 +152,15 @@ class FleetDriver(Node):
         self.robot_spawn_yaw = config.robot_spawn_yaw
 
         self.robots = {}  # robot_id -> {x, y, yaw, has_odom, target_xy, target_node, cmd_pub}
+        # fms_node.py가 교착 반복(DEADLOCK_NOTIFY_THRESHOLD회 이상)을 감지하면
+        # /fms/emergency_stop으로 전체 정지를 방송한다 — 이 로봇의 종류/그래프와
+        # 무관하게 여기서 관리하는 모든 로봇을 즉시 멈추고, 해제({"stop": false})
+        # 전까지는 새 이동 명령이 와도(_on_command가 target을 갱신해도) 무시한다.
+        self._emergency_stopped = False
 
         self.status_pub = self.create_publisher(String, "/amr/status", 10)
         self.create_subscription(String, "/fms/commands", self._on_command, _COMMAND_QOS)
+        self.create_subscription(String, "/fms/emergency_stop", self._on_emergency_stop, _COMMAND_QOS)
 
         for robot_id in self.ROBOT_HOME_NODE:
             self._ensure_robot(robot_id)
@@ -206,6 +212,16 @@ class FleetDriver(Node):
         robot["yaw"] = _normalize_angle(spawn_yaw + _yaw_from_quaternion(msg.pose.pose.orientation))
         robot["has_odom"] = True
 
+    def _on_emergency_stop(self, msg):
+        data = json.loads(msg.data)
+        self._emergency_stopped = data.get("stop", True)
+        if self._emergency_stopped:
+            self.get_logger().error(f"[비상 정지] 전체 AMR 정지 — 사유: {data.get('reason', '(명시 안 됨)')}")
+            for robot in self.robots.values():
+                robot["cmd_pub"].publish(Twist())
+        else:
+            self.get_logger().warn("[비상 정지 해제] 이동 재개")
+
     def _on_command(self, msg):
         data = json.loads(msg.data)
         robot_id = data["robot_id"]
@@ -218,6 +234,15 @@ class FleetDriver(Node):
         self.robots[robot_id]["target_is_final"] = data.get("is_final_hop", True)
 
     def _control_tick(self):
+        if self._emergency_stopped:
+            # 매 tick 0 속도를 반복 전송한다 — _on_emergency_stop에서 한 번만
+            # 보내면 STOP_HOLD_SEC 로직과 마찬가지로 PhysX 잔여 관성이 안 죽어서
+            # 계속 미끄러질 수 있다. target_xy/state는 건드리지 않고 그대로
+            # 두므로, 해제되면 원래 향하던 목표로 자연스럽게 이어서 이동한다.
+            for robot in self.robots.values():
+                robot["cmd_pub"].publish(Twist())
+            return
+
         now = self.get_clock().now()
         for robot_id, robot in self.robots.items():
             if robot["stop_until"] is not None:

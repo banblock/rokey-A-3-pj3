@@ -183,6 +183,20 @@ class FleetManagementSystem(Node):
         # QoS로 맞춰야 한다(fleet_driver.py 참고).
         self.command_pub = self.create_publisher(String, "/fms/commands", RELIABLE_EVENT_QOS)
         self.create_subscription(String, "/amr/status", self._on_robot_status, 10)
+        # 교착이 DEADLOCK_NOTIFY_THRESHOLD회 이상 반복되면(단순 정체가 아니라 실제
+        # 사고/오류로 의심되는 수준) 메인 컨트롤 알림만으로는 로봇들이 계속 움직이며
+        # 상황을 더 악화시킬 수 있어, 전체 AMR을 물리적으로 정지시키는 신호도 같이
+        # 보낸다. fleet_driver.py는 이 로봇의 종류와 무관하게 모든 로봇의 cmd_vel을
+        # 0으로 고정한다 — TRANSIENT_LOCAL이라 늦게(재시작 등으로) 구독해도 마지막
+        # 정지 상태를 그대로 받는다. 해제는 자동으로 되지 않는다(사람이 현장을 확인한
+        # 뒤 {"stop": false}를 같은 토픽에 발행해야 함) — 원인 파악 전에 로봇이
+        # 스스로 재개하면 같은 사고가 반복될 수 있어서 일부러 수동 해제로만 둔다.
+        self._emergency_stopped = False
+        self.emergency_stop_pub = self.create_publisher(String, "/fms/emergency_stop", RELIABLE_EVENT_QOS)
+        # 자기 자신도 구독해야 한다 — 정지 방송은 FMS가 스스로 켜지만, 해제({"stop":
+        # false})는 사람이 외부에서(예: ros2 topic pub) 발행한다. 구독이 없으면
+        # fleet_driver는 재개해도 FMS의 _dispatch_tick은 영원히 멈춘 채로 남는다.
+        self.create_subscription(String, "/fms/emergency_stop", self._on_emergency_stop, RELIABLE_EVENT_QOS)
 
         # 메인 컨트롤 노드 → FMS: 신발 종류 하나에 대한 배치(길이 리스트) 작업 지시.
         # 예전에는 FMS가 비전 서비스를 직접 트리거·호출했지만, 이제는 메인 컨트롤
@@ -320,6 +334,12 @@ class FleetManagementSystem(Node):
                 self._try_advance_hop(robot_id, now)
 
     def _dispatch_tick(self):
+        if self._emergency_stopped:
+            # 비상 정지 중엔 워치독/배차 로직을 전부 건너뛴다 — 로봇들이 실제로
+            # 멈춰서 응답이 없는 게 정상 상태인데, 워치독이 이걸 "이동 실패"로
+            # 오판해 락을 풀고 재전송하면 해제 전에 다시 움직이려 들 수 있다.
+            return
+
         now = self.get_clock().now()
 
         # 0) 이동 워치독 — 명령 보낸 뒤 응답 없이 너무 오래 걸리면 락을 풀고 재시도
@@ -816,12 +836,39 @@ class FleetManagementSystem(Node):
                 self._report_amr_state(
                     robot_id, 1, f"{robot_id} 반복 교착 {robot_deadlock_count}회 (최근 위치: {next_node})"
                 )
+                self._broadcast_emergency_stop(
+                    f"{robot_id} 반복 교착 {robot_deadlock_count}회 (최근 위치: {next_node})"
+                )
             if node_deadlock_count >= DEADLOCK_NOTIFY_THRESHOLD:
                 self._report_amr_state(
                     robot_id, 2, f"{next_node} 반복 교착 {node_deadlock_count}회 (로봇: {robot_id})"
                 )
+                self._broadcast_emergency_stop(
+                    f"{next_node} 반복 교착 {node_deadlock_count}회 (로봇: {robot_id})"
+                )
         else:
             self.get_logger().info(f"[교착 해소] {robot_id} — {elapsed_sec:.1f}초 만에 재개")
+
+    def _on_emergency_stop(self, msg):
+        data = json.loads(msg.data)
+        if data.get("stop", True):
+            return  # 자기 자신이 방금 방송한 정지 신호를 되받은 경우 등 — 이미 처리됨
+        if not self._emergency_stopped:
+            return
+        self._emergency_stopped = False
+        self.get_logger().warn("[비상 정지 해제] 배차/워치독 재개")
+
+    def _broadcast_emergency_stop(self, reason):
+        if self._emergency_stopped:
+            return  # 이미 정지 방송한 상태 — 중복 발행/로그 스팸 방지
+        self._emergency_stopped = True
+        msg = String()
+        msg.data = json.dumps({"stop": True, "reason": reason})
+        self.emergency_stop_pub.publish(msg)
+        self.get_logger().error(
+            f"[비상 정지] 교착 반복 임계치({DEADLOCK_NOTIFY_THRESHOLD}회) 초과 — 전체 AMR 정지 방송 "
+            f"({reason}). 원인 확인 후 /fms/emergency_stop에 {{'stop': false}}를 발행해야 재개됩니다."
+        )
 
 
 def main(args=None):
