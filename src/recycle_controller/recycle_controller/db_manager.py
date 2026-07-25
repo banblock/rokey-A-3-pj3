@@ -6,7 +6,7 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.errors import PyMongoError
 
-from db_schema import InventoryItem
+from .db_schema import InventoryItem
 
 
 class MongoDBManager:

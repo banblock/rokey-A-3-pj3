@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
-from .db.db_manager import MongoDBManager
+from .db_manager import MongoDBManager
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
@@ -64,11 +64,6 @@ class ControlNode(Node):
             .string_value
         )
 
-        self.database_name = (
-            self.get_parameter("database_name")
-            .get_parameter_value()
-            .string_value
-        )
 
         # --------------------------------------------------
         # 내부 상태
@@ -89,9 +84,7 @@ class ControlNode(Node):
         # --------------------------------------------------
 
         self.db = MongoDBManager(
-            uri=self.mongodb_uri,
-            database_name=self.database_name,
-            reset_on_start=True,
+            reset_on_start=True
         )
 
         # --------------------------------------------------
