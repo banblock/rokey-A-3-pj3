@@ -45,16 +45,29 @@ class VisionNode(Node):
         # publish는 가벼우니 기본으로 두고, 디스크 저장은 필요할 때만 켠다.
         self.declare_parameter('save_debug_image', True)
 
+        # 3단계: cam3(바닥) OBB 모델로 신발 길이(px) 측정 -> 사이즈 분류.
+        # px->mm 캘리브레이션이 아직 없어서, 일단 px 길이 기준 임의 구간 2개로
+        # 240/260/280mm 3개를 나눈다 (실측 캘리브레이션 끝나면 이 두 임계값만 바꾸면 됨).
+        self.declare_parameter('model_path_stage3', '/home/rokey/cobot3_ws/src/vision_node/resource/best_task3.pt')
+        self.declare_parameter('image_size_stage3', 960)
+        self.declare_parameter('size_px_threshold_1', 300.0)  # 이 미만 -> 240mm
+        self.declare_parameter('size_px_threshold_2', 340.0)  # 이상 -> 280mm, 사이는 260mm
+
         self.model_path = self.get_parameter('model_path').value
         self.model_path_stage2 = self.get_parameter('model_path_stage2').value
         self.img_size = self.get_parameter('image_size').value
         self.img_size_stage2 = self.get_parameter('image_size_stage2').value
         self.stage2_pad_ratio = self.get_parameter('stage2_pad_ratio').value
         self.save_debug_image = self.get_parameter('save_debug_image').value
+        self.model_path_stage3 = self.get_parameter('model_path_stage3').value
+        self.img_size_stage3 = self.get_parameter('image_size_stage3').value
+        self.size_px_threshold_1 = self.get_parameter('size_px_threshold_1').value
+        self.size_px_threshold_2 = self.get_parameter('size_px_threshold_2').value
 
         self.bridge = CvBridge()
         self.model = self._load_model(self.model_path, 'stage1 (shoe)')
         self.model2 = self._load_model(self.model_path_stage2, 'stage2 (tear crop)')
+        self.model3 = self._load_model(self.model_path_stage3, 'stage3 (bottom OBB size)')
         self._warmup_models()
 
         image_qos = QoSProfile(
@@ -133,10 +146,13 @@ class VisionNode(Node):
         왔을 때는 이 워밍업 비용을 안 치르게 한다."""
         dummy1 = np.zeros((self.img_size, self.img_size, 3), dtype=np.uint8)
         dummy2 = np.zeros((self.img_size_stage2, self.img_size_stage2, 3), dtype=np.uint8)
+        dummy3 = np.zeros((self.img_size_stage3, self.img_size_stage3, 3), dtype=np.uint8)
         if self.model is not None:
             self.model.predict(dummy1, imgsz=self.img_size, quantize="fp16", verbose=False)
         if self.model2 is not None:
             self.model2.predict(dummy2, imgsz=self.img_size_stage2, quantize="fp16", verbose=False)
+        if self.model3 is not None:
+            self.model3.predict(dummy3, imgsz=self.img_size_stage3, quantize="fp16", verbose=False)
         self.get_logger().info('Model warm-up done')
 
     # ------------------------------------------------------------------
@@ -192,10 +208,14 @@ class VisionNode(Node):
         self.get_logger().info('Inference started')
         try:
             image_msgs = [frames['cam1'], frames['cam2']]
-            # frames['cam3']]
             result = self._infer_pair(image_msgs)
             judgement = self._judge_pair(result)
-            self._publish_result(result, judgement)
+            # cam3(바닥)는 cam1/cam2처럼 검사 완료 조건에 안 걸려있다 — 안 들어와도
+            # 검사 자체가 멈추면 안 되니, 이 시점 기준 가장 최근 프레임을 best-effort로
+            # 쓴다 (frames에 캡처된 게 있으면 그걸, 없으면 latest_frames로 대체).
+            cam3_msg = frames.get('cam3') or self.latest_frames.get('cam3')
+            size_mm = self._measure_shoe_size_mm(cam3_msg)
+            self._publish_result(result, judgement, size_mm)
         finally:
             elapsed = time.time() - start
             self.get_logger().info(f'Inference finished ({elapsed:.2f}s)')
@@ -496,6 +516,47 @@ class VisionNode(Node):
         return out
 
     # ------------------------------------------------------------------
+    # 3단계: cam3(바닥) OBB로 신발 길이 측정 -> 사이즈 분류
+    # ------------------------------------------------------------------
+
+    def _classify_size_mm(self, length_px: float) -> int:
+        """px 길이를 240/260/280mm 중 하나로 분류한다. 임계값 두 개(size_px_threshold_1/2)는
+        아직 캘리브레이션 전이라 임의值 — 실측 후 이 두 파라미터만 바꾸면 된다."""
+        if length_px < self.size_px_threshold_1:
+            return 240
+        elif length_px < self.size_px_threshold_2:
+            return 260
+        else:
+            return 280
+
+    def _measure_shoe_size_mm(self, cam3_msg):
+        """cam3 이미지에서 OBB 모델(model3)로 신발을 찾아 긴 변(px)을 재고, 그걸 사이즈
+        구간으로 분류한다. cam3 프레임이 없거나 신발을 못 찾으면 None을 반환한다."""
+        if self.model3 is None or cam3_msg is None:
+            return None
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(cam3_msg, desired_encoding='bgr8')
+        except Exception as e:
+            self.get_logger().warn(f'CV bridge failed (cam3): {e}')
+            return None
+
+        result = self.model3.predict(
+            cv_image, imgsz=self.img_size_stage3, quantize="fp16", verbose=False,
+        )[0]
+        obb = result.obb
+        if obb is None or len(obb) == 0:
+            self.get_logger().warn('cam3: shoe OBB not found')
+            return None
+
+        # confidence 가장 높은 것 하나만 쓴다 (한 번에 켤레 하나만 지나간다는 전제).
+        best_idx = int(obb.conf.argmax())
+        w, h = float(obb.xywhr[best_idx][2]), float(obb.xywhr[best_idx][3])
+        length_px = max(w, h)
+        size_mm = self._classify_size_mm(length_px)
+        self.get_logger().info(f'cam3: length_px={length_px:.1f} -> size={size_mm}mm')
+        return size_mm
+
+    # ------------------------------------------------------------------
     # def _judge_pair(self, left: dict, right: dict) -> dict:
     #     if left['has_tear'] or right['has_tear']:
     #         self.get_logger().info('Discard reason: defect_tear')
@@ -589,23 +650,23 @@ class VisionNode(Node):
     #         f"color={judgement['color']}, size={judgement['size']}"
     #     )
 
-    def _publish_result(self, result: dict, judgement: dict):
+    def _publish_result(self, result: dict, judgement: dict, size_mm=None):
         msg = ShoeInspectionResult()
         msg.discard = judgement['discard']
         msg.color = 0  # TODO: OpenCV 색상 판정
-        msg.size = 240 # TODO: cam3 seg 기반 사이즈 측정
+        # cam3 OBB로 못 재면(카메라 안 들어옴/신발 못 찾음) 240mm 기본값으로 둔다.
+        msg.size = size_mm if size_mm is not None else 240
 
         # ----------------------------------------------------
-        # _infer_pair에서 넘어온 result 딕셔너리에서 Bbox 정보 추출
+        # _infer_pair에서 넘어온 result 딕셔너리에서 탐지 결과 추출
         # ----------------------------------------------------
-        # 퍼블리시할 때 cam1, cam2 결과를 전부 보내고 싶다면 all_detections 사용
-        dets = result.get('all_detections', [])
-        
+        dets = result.get('detections', [])
 
         self.pub_result.publish(msg)
 
         self.get_logger().info(
-            f"[RESULT] discard={judgement['discard']}, reason={judgement['reason']}, found_defects={len(dets)}"
+            f"[RESULT] discard={judgement['discard']}, reason={judgement['reason']}, "
+            f"found_defects={len(dets)}, size_mm={msg.size}"
         )
 
 
