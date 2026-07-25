@@ -12,21 +12,8 @@ import os
 import traceback
 import math
 import numpy as np
-import omni.graph.core as og
-import usdrt.Sdf
-import omni.usd
-import omni.timeline
-from pxr import Usd
 
-from isaacsim.core.api import World
 from isaacsim.core.utils.extensions import enable_extension
-from isaacsim.core.utils.stage import add_reference_to_stage
-from isaacsim.core.prims import SingleXFormPrim
-from isaacsim.storage.native import get_assets_root_path
-
-from fleet_config_test1 import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
-from simulation_node_8 import SimulationNode, create_simulation_node, prepare_stage
-
 
 for extension_name in (
     "omni.graph.core",
@@ -39,7 +26,34 @@ for extension_name in (
 ):
     enable_extension(extension_name)
 
+# Extension 초기화
 simulation_app.update()
+
+import omni.graph.core as og
+import usdrt.Sdf
+import omni.usd
+import omni.timeline
+
+from pxr import Usd
+
+from isaacsim.core.api import World
+from isaacsim.core.utils.stage import add_reference_to_stage
+from isaacsim.core.prims import SingleXFormPrim
+from isaacsim.storage.native import get_assets_root_path
+
+from fleet_config_test1 import (
+    NODE_GRAPH,
+    ROBOT_HOME_NODE,
+    ROBOT_SHOE_TYPE,
+    SHOE_TYPES,
+    robot_spawn_yaw,
+)
+
+from simulation_node_10 import (
+    SimulationNode,
+    create_simulation_node,
+    prepare_stage,
+)
 
 WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
@@ -52,7 +66,7 @@ NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_cart
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/stage_v18.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/stage_v19.usd"
 )
 
 

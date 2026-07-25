@@ -14,7 +14,11 @@ import random
 import re
 from typing import Final
 
-import omni.graph.core as og
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, String
+
 import omni.timeline
 import omni.usd
 from omni.physx import get_physx_simulation_interface
@@ -43,20 +47,68 @@ SHOEBOX_ROOT_PATH: Final[str] = "/World/shoeboxs"
 
 
 # =====================================================================
-# ROS2 비상정지 Action Graph
+# ROS2 통신
 # =====================================================================
 
 EMERGENCY_STOP_TOPIC: Final[str] = "/control/emergency_stop"
-EMERGENCY_GRAPH_PATH: Final[str] = "/World/ROS_EmergencyStop"
-EMERGENCY_SUBSCRIBER_NODE: Final[str] = "SubscribeEmergencyStop"
-EMERGENCY_DATA_ATTR_PATH: Final[str] = (
-    f"{EMERGENCY_GRAPH_PATH}/{EMERGENCY_SUBSCRIBER_NODE}.outputs:data"
+SHOE_STOP_TOPIC: Final[str] = "/shoe_stop"
+START_SCENE_TOPIC: Final[str] = "/control/start_scene"
+AMR_READY_TOPIC: Final[str] = "/fms/amr_ready"
+AMR_CARRYING_COMPLETE_TOPIC: Final[str] = "/fms/amr_carrying_complete"
+
+RELIABLE_EVENT_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
 )
 
-SHOE_STOP_TOPIC: Final[str] = "/shoe_stop"
-SHOE_STOP_GRAPH_PATH: Final[str] = "/World/ROS_ShoeStopPublisher"
-SHOE_STOP_PUBLISHER_NODE: Final[str] = "PublishShoeStop"
-SHOE_STOP_BRANCH_NODE: Final[str] = "ShoeStopBranch"
+
+class RosInterface(Node):
+    def __init__(self) -> None:
+        super().__init__("isaac_simulation_node")
+
+        self.emergency_stop = False
+        self.start_scene = False
+        self.amr_ready = ""
+        self.amr_carrying_complete = ""
+
+        self.create_subscription(
+            Bool, EMERGENCY_STOP_TOPIC, self._on_emergency_stop, 10
+        )
+        self.create_subscription(
+            Bool, START_SCENE_TOPIC, self._on_start_scene, 10
+        )
+        self.create_subscription(
+            String, AMR_READY_TOPIC, self._on_amr_ready, RELIABLE_EVENT_QOS
+        )
+        self.create_subscription(
+            String,
+            AMR_CARRYING_COMPLETE_TOPIC,
+            self._on_amr_carrying_complete,
+            RELIABLE_EVENT_QOS,
+        )
+
+        self._shoe_stop_publisher = self.create_publisher(
+            Bool, SHOE_STOP_TOPIC, 10
+        )
+
+    def _on_emergency_stop(self, msg: Bool) -> None:
+        self.emergency_stop = msg.data
+
+    def _on_start_scene(self, msg: Bool) -> None:
+        self.start_scene = msg.data
+
+    def _on_amr_ready(self, msg: String) -> None:
+        self.amr_ready = msg.data
+
+    def _on_amr_carrying_complete(self, msg: String) -> None:
+        self.amr_carrying_complete = msg.data
+
+    def publish_shoe_stop(self) -> None:
+        msg = Bool()
+        msg.data = True
+        self._shoe_stop_publisher.publish(msg)
 
 
 # =====================================================================
@@ -125,158 +177,6 @@ TRIGGER4_CONFLICT_NODES: Final[tuple[str, ...]] = (
     "set_prim_active",
     "set_prim_active_01",
 )
-
-
-# =====================================================================
-# ROS2 비상정지 그래프 생성
-# =====================================================================
-
-def _build_emergency_stop_graph(
-    stage: Usd.Stage,
-) -> None:
-    """비상정지용 ROS2 Bool Subscriber 그래프를 생성합니다."""
-
-    existing_graph_prim = stage.GetPrimAtPath(
-        EMERGENCY_GRAPH_PATH
-    )
-
-    # 이 그래프는 실행 중 동적으로 생성됩니다. 같은 Stage에서 스크립트를
-    # 다시 로드했을 때 불완전한 그래프가 남아 있으면 제거하고 재생성합니다.
-    if existing_graph_prim.IsValid():
-        stage.RemovePrim(EMERGENCY_GRAPH_PATH)
-        print(
-            "[simulation] 기존 비상정지 그래프 제거: "
-            f"{EMERGENCY_GRAPH_PATH}"
-        )
-
-    keys = og.Controller.Keys
-
-    og.Controller.edit(
-        {
-            "graph_path": EMERGENCY_GRAPH_PATH,
-            "evaluator_name": "execution",
-        },
-        {
-            keys.CREATE_NODES: [
-                (
-                    "OnTick",
-                    "omni.graph.action.OnPlaybackTick",
-                ),
-                (
-                    "Context",
-                    "isaacsim.ros2.bridge.ROS2Context",
-                ),
-                (
-                    EMERGENCY_SUBSCRIBER_NODE,
-                    "isaacsim.ros2.bridge.ROS2Subscriber",
-                ),
-            ],
-            keys.CONNECT: [
-                (
-                    "OnTick.outputs:tick",
-                    f"{EMERGENCY_SUBSCRIBER_NODE}.inputs:execIn",
-                ),
-                (
-                    "Context.outputs:context",
-                    f"{EMERGENCY_SUBSCRIBER_NODE}.inputs:context",
-                ),
-            ],
-            keys.SET_VALUES: [
-                (
-                    f"{EMERGENCY_SUBSCRIBER_NODE}.inputs:topicName",
-                    EMERGENCY_STOP_TOPIC,
-                ),
-                (
-                    f"{EMERGENCY_SUBSCRIBER_NODE}.inputs:messagePackage",
-                    "std_msgs",
-                ),
-                (
-                    f"{EMERGENCY_SUBSCRIBER_NODE}.inputs:messageSubfolder",
-                    "msg",
-                ),
-                (
-                    f"{EMERGENCY_SUBSCRIBER_NODE}.inputs:messageName",
-                    "Bool",
-                ),
-            ],
-        },
-    )
-
-    graph_prim = stage.GetPrimAtPath(EMERGENCY_GRAPH_PATH)
-    subscriber_prim = stage.GetPrimAtPath(
-        f"{EMERGENCY_GRAPH_PATH}/{EMERGENCY_SUBSCRIBER_NODE}"
-    )
-    print(
-        "[simulation] 비상정지 범용 Subscriber 생성: "
-        f"{EMERGENCY_STOP_TOPIC} (std_msgs/msg/Bool)"
-    )
-    print(
-        "[EMERGENCY DEBUG] graph valid=",
-        graph_prim.IsValid(),
-        ", subscriber valid=",
-        subscriber_prim.IsValid(),
-        sep="",
-    )
-
-
-
-
-# =====================================================================
-# ROS2 shoe_stop Publisher 그래프 생성
-# =====================================================================
-
-def _build_shoe_stop_graph(
-    stage: Usd.Stage,
-) -> None:
-    """rclpy 없이 /shoe_stop Bool Publisher 그래프를 생성합니다."""
-
-    existing_graph = stage.GetPrimAtPath(SHOE_STOP_GRAPH_PATH)
-
-    if existing_graph.IsValid():
-        stage.RemovePrim(SHOE_STOP_GRAPH_PATH)
-
-    keys = og.Controller.Keys
-
-    og.Controller.edit(
-        {
-            "graph_path": SHOE_STOP_GRAPH_PATH,
-            "evaluator_name": "execution",
-        },
-        {
-            keys.CREATE_NODES: [
-                ("OnTick", "omni.graph.action.OnPlaybackTick"),
-                ("Context", "isaacsim.ros2.bridge.ROS2Context"),
-                (SHOE_STOP_BRANCH_NODE, "omni.graph.action.Branch"),
-                (
-                    SHOE_STOP_PUBLISHER_NODE,
-                    "isaacsim.ros2.bridge.ROS2Publisher",
-                ),
-            ],
-            keys.CONNECT: [
-                ("OnTick.outputs:tick", f"{SHOE_STOP_BRANCH_NODE}.inputs:execIn"),
-                (
-                    f"{SHOE_STOP_BRANCH_NODE}.outputs:execTrue",
-                    f"{SHOE_STOP_PUBLISHER_NODE}.inputs:execIn",
-                ),
-                (
-                    "Context.outputs:context",
-                    f"{SHOE_STOP_PUBLISHER_NODE}.inputs:context",
-                ),
-            ],
-            keys.SET_VALUES: [
-                (f"{SHOE_STOP_BRANCH_NODE}.inputs:condition", False),
-                (f"{SHOE_STOP_PUBLISHER_NODE}.inputs:topicName", SHOE_STOP_TOPIC),
-                (f"{SHOE_STOP_PUBLISHER_NODE}.inputs:messagePackage", "std_msgs"),
-                (f"{SHOE_STOP_PUBLISHER_NODE}.inputs:messageSubfolder", "msg"),
-                (f"{SHOE_STOP_PUBLISHER_NODE}.inputs:messageName", "Bool"),
-            ],
-        },
-    )
-
-    print(
-        "[simulation] ROS2 Bridge Publisher 생성: "
-        f"{SHOE_STOP_TOPIC} (std_msgs/msg/Bool)"
-    )
 
 
 # =====================================================================
@@ -350,8 +250,6 @@ def prepare_stage() -> None:
     if stage is None:
         raise RuntimeError("열려 있는 USD Stage가 없습니다.")
 
-    _build_emergency_stop_graph(stage)
-    _build_shoe_stop_graph(stage)
     _disable_missing_dome_light(stage)
 
     # 기존 ConveyorBeltGraph 전체는 유지합니다.
@@ -635,6 +533,11 @@ class SimulationNode:
                 "열려 있는 USD Stage가 없습니다."
             )
 
+        if not rclpy.ok():
+            rclpy.init()
+
+        self._ros_node = RosInterface()
+
         # -------------------------------------------------------------
         # ShoeTrigger
         # -------------------------------------------------------------
@@ -753,10 +656,6 @@ class SimulationNode:
             omni.timeline.get_timeline_interface()
         )
 
-        # OmniGraph 출력 포트는 그래프 평가가 시작된 뒤 준비될 수 있으므로
-        # update()에서 찾을 때까지 None 상태로 둡니다.
-        self._emergency_data_attr = None
-        self._emergency_attr_wait_logged = False
         self._emergency_stopped = False
         self._working_speed_before_emergency = 1.0
         self._vision_stop_started_at: float | None = None
@@ -764,11 +663,8 @@ class SimulationNode:
         self._vision_resume_deadline: float | None = None
         self._stop_trigger_sequences: list[dict[str, object]] = []
 
-        self._shoe_stop_condition_attr = og.Controller.attribute(
-            f"{SHOE_STOP_GRAPH_PATH}/{SHOE_STOP_BRANCH_NODE}.inputs:condition"
-        )
-        self._shoe_stop_data_attr = None
-        self._shoe_stop_pulse_pending = False
+        self._scene_started = False
+        self._previous_start_scene_signal = False
 
         initial_working_speed = self._get_attribute_float(
             self._working_conveyor_velocity_attr,
@@ -802,20 +698,11 @@ class SimulationNode:
             f"{TRIGGER_PATH}"
         )
 
-        spawn_signal = self._read_shoe_spawn_signal()
-        self._activate_random_shoe()
-
-        self._next_activation_time = (
-            self._timeline.get_current_time()
-            + SHOE_ACTIVATION_DELAY_SEC
-        )
-
-        print("[simulation] 시작 신발 즉시 활성화")
+        self._next_activation_time: float | None = None
 
         print(
-            "[simulation] 이후 "
-            f"{SHOE_ACTIVATION_DELAY_SEC}초마다 "
-            "비활성 신발 랜덤 활성화"
+            "[simulation] 시작 신호 대기: "
+            f"{START_SCENE_TOPIC} (std_msgs/msg/Bool)"
         )
 
     # =================================================================
@@ -1050,20 +937,8 @@ class SimulationNode:
             shoe_path
         )
 
-    def _activate_random_shoe(
-        self,
-        spawn_signal: bool,
-    ) -> None:
-        # False이면 스폰하지 않음
-        if not spawn_signal:
-            self._previous_shoe_spawn_signal = False
-            return
-
-        # True가 계속 유지 중이면 중복 스폰하지 않음
-        if self._previous_shoe_spawn_signal:
-            return
-
-        self._previous_shoe_spawn_signal = True
+    def _activate_random_shoe(self) -> None:
+        """비활성 상태인 신발 중 하나를 랜덤하게 활성화합니다."""
 
         candidates: list[str] = []
 
@@ -1232,97 +1107,6 @@ class SimulationNode:
         except (TypeError, ValueError):
             return float(default)
 
-    def _find_emergency_data_attribute(self):
-        """범용 ROS2 Subscriber가 동적으로 만든 Bool 출력 포트를 찾습니다."""
-
-        subscriber_path = (
-            f"{EMERGENCY_GRAPH_PATH}/{EMERGENCY_SUBSCRIBER_NODE}"
-        )
-        subscriber_prim = self._stage.GetPrimAtPath(subscriber_path)
-
-        if not subscriber_prim.IsValid():
-            return None
-
-        # std_msgs/msg/Bool의 필드는 data 하나입니다. 범용 Subscriber가
-        # 메시지 타입을 로드한 뒤 생성한 outputs:data를 우선 찾습니다.
-        candidate_names = (
-            "outputs:data",
-            "outputs:data.data",
-        )
-
-        for attr_name in candidate_names:
-            attr_path = f"{subscriber_path}.{attr_name}"
-            graph_attr = og.Controller.attribute(attr_path)
-
-            if graph_attr is not None:
-                if not self._emergency_attr_wait_logged:
-                    print(
-                        "[EMERGENCY DEBUG] Bool 출력 포트 확인: "
-                        f"{attr_path}"
-                    )
-                self._emergency_attr_wait_logged = True
-                return graph_attr
-
-        # 빌드에 따라 동적 출력 이름이 달라질 수 있으므로 실제 outputs 포트
-        # 중 data로 끝나는 Bool 포트도 검색합니다.
-        output_names: list[str] = []
-
-        for usd_attr in subscriber_prim.GetAttributes():
-            attr_name = usd_attr.GetName()
-
-            if not attr_name.startswith("outputs:"):
-                continue
-
-            output_names.append(attr_name)
-
-            if attr_name.split(":")[-1].lower() != "data":
-                continue
-
-            attr_path = f"{subscriber_path}.{attr_name}"
-            graph_attr = og.Controller.attribute(attr_path)
-
-            if graph_attr is not None:
-                print(
-                    "[EMERGENCY DEBUG] 동적 Bool 출력 포트 확인: "
-                    f"{attr_path}"
-                )
-                self._emergency_attr_wait_logged = True
-                return graph_attr
-
-        if not self._emergency_attr_wait_logged:
-            print(
-                "[EMERGENCY DEBUG] Bool 출력 포트 생성 대기 중. "
-                "현재 출력="
-                f"{output_names}"
-            )
-            self._emergency_attr_wait_logged = True
-
-        return None
-
-    def _read_emergency_stop(self) -> bool:
-        """범용 ROS2 Subscriber에서 std_msgs/msg/Bool 값을 읽습니다."""
-
-        if self._emergency_data_attr is None:
-            self._emergency_data_attr = (
-                self._find_emergency_data_attribute()
-            )
-
-        if self._emergency_data_attr is None:
-            return False
-
-        try:
-            value = og.Controller.get(self._emergency_data_attr)
-        except Exception as exc:
-            self._emergency_data_attr = None
-            self._emergency_attr_wait_logged = False
-            print(
-                "[EMERGENCY DEBUG] 비상정지 값 읽기 실패: "
-                f"{exc}"
-            )
-            return False
-
-        return bool(value) if value is not None else False
-
     def _stop_all_conveyors(self) -> None:
         self._working_conveyor_velocity_attr.Set(0.0)
 
@@ -1419,34 +1203,8 @@ class SimulationNode:
     # =================================================================
 
     def _publish_shoe_stop(self) -> None:
-        """ROS2 Bridge Publisher를 다음 그래프 평가에서 한 번 실행합니다."""
-
-        if self._shoe_stop_data_attr is None:
-            data_path = (
-                f"{SHOE_STOP_GRAPH_PATH}/{SHOE_STOP_PUBLISHER_NODE}.inputs:data"
-            )
-            self._shoe_stop_data_attr = og.Controller.attribute(data_path)
-
-        if self._shoe_stop_data_attr is not None:
-            og.Controller.set(self._shoe_stop_data_attr, True)
-
-        if self._shoe_stop_condition_attr is None:
-            raise RuntimeError(
-                "shoe_stop Publisher Branch condition을 찾지 못했습니다."
-            )
-
-        og.Controller.set(self._shoe_stop_condition_attr, True)
-        self._shoe_stop_pulse_pending = True
-        print(f"[simulation] {SHOE_STOP_TOPIC}: data=True 발행 요청")
-
-    def _finish_shoe_stop_pulse(self) -> None:
-        """한 번 평가된 Publisher Branch를 다시 닫습니다."""
-
-        if not self._shoe_stop_pulse_pending:
-            return
-
-        og.Controller.set(self._shoe_stop_condition_attr, False)
-        self._shoe_stop_pulse_pending = False
+        self._ros_node.publish_shoe_stop()
+        print(f"[simulation] {SHOE_STOP_TOPIC}: data=True 발행")
 
     def _start_stop_trigger_sequence(self) -> None:
         self._stop_trigger_sequences.append(
@@ -1504,10 +1262,26 @@ class SimulationNode:
         if not self._timeline.is_playing():
             return
 
-        # 이전 프레임에 열어 둔 /shoe_stop Publisher 펄스를 닫습니다.
-        self._finish_shoe_stop_pulse()
+        rclpy.spin_once(self._ros_node, timeout_sec=0.0)
 
         now = self._timeline.get_current_time()
+
+        start_scene_signal = self._ros_node.start_scene
+
+        if start_scene_signal and not self._previous_start_scene_signal:
+            self._scene_started = True
+            self._activate_random_shoe()
+            self._next_activation_time = (
+                now + SHOE_ACTIVATION_DELAY_SEC
+            )
+            print("[simulation] 시작 신호로 첫 신발 즉시 활성화")
+
+        elif not start_scene_signal and self._previous_start_scene_signal:
+            self._scene_started = False
+            self._next_activation_time = None
+            print(f"[simulation] {START_SCENE_TOPIC}: False 수신")
+
+        self._previous_start_scene_signal = start_scene_signal
 
         while self._pending_stop_trigger_shoes:
             self._pending_stop_trigger_shoes.pop(0)
@@ -1515,7 +1289,7 @@ class SimulationNode:
 
         self._update_stop_trigger_sequences(now)
 
-        emergency_signal = self._read_emergency_stop()
+        emergency_signal = self._ros_node.emergency_stop
 
         if emergency_signal and not self._emergency_stopped:
             self._enter_emergency_stop(now)
@@ -1567,7 +1341,11 @@ class SimulationNode:
                     shoe_path
                 )
 
-        if now >= self._next_activation_time:
+        if (
+            self._scene_started
+            and self._next_activation_time is not None
+            and now >= self._next_activation_time
+        ):
             self._activate_random_shoe()
 
             self._next_activation_time = (
@@ -1588,6 +1366,11 @@ class SimulationNode:
             )
 
             self._trigger_subscription_id = None
+
+        self._ros_node.destroy_node()
+
+        if rclpy.ok():
+            rclpy.shutdown()
 
         print("[simulation] SimulationNode 종료")
 

@@ -58,6 +58,10 @@ SHOE_STOP_GRAPH_PATH: Final[str] = "/World/ROS_ShoeStopPublisher"
 SHOE_STOP_PUBLISHER_NODE: Final[str] = "PublishShoeStop"
 SHOE_STOP_BRANCH_NODE: Final[str] = "ShoeStopBranch"
 
+START_SCENE_TOPIC: Final[str] = "/control/start_scene"
+START_SCENE_GRAPH_PATH: Final[str] = "/World/ROS_StartScene"
+START_SCENE_SUBSCRIBER_NODE: Final[str] = "SubscribeStartScene"
+
 
 # =====================================================================
 # 시간 설정
@@ -280,6 +284,73 @@ def _build_shoe_stop_graph(
 
 
 # =====================================================================
+# ROS2 start_scene Subscriber 그래프 생성
+# =====================================================================
+
+def _build_start_scene_graph(
+    stage: Usd.Stage,
+) -> None:
+    """/control/start_scene Bool Subscriber를 생성합니다."""
+
+    existing_graph = stage.GetPrimAtPath(START_SCENE_GRAPH_PATH)
+
+    if existing_graph.IsValid():
+        stage.RemovePrim(START_SCENE_GRAPH_PATH)
+
+    keys = og.Controller.Keys
+
+    og.Controller.edit(
+        {
+            "graph_path": START_SCENE_GRAPH_PATH,
+            "evaluator_name": "execution",
+        },
+        {
+            keys.CREATE_NODES: [
+                ("OnTick", "omni.graph.action.OnPlaybackTick"),
+                ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+                (
+                    START_SCENE_SUBSCRIBER_NODE,
+                    "isaacsim.ros2.bridge.ROS2Subscriber",
+                ),
+            ],
+            keys.CONNECT: [
+                (
+                    "OnTick.outputs:tick",
+                    f"{START_SCENE_SUBSCRIBER_NODE}.inputs:execIn",
+                ),
+                (
+                    "Context.outputs:context",
+                    f"{START_SCENE_SUBSCRIBER_NODE}.inputs:context",
+                ),
+            ],
+            keys.SET_VALUES: [
+                (
+                    f"{START_SCENE_SUBSCRIBER_NODE}.inputs:topicName",
+                    START_SCENE_TOPIC,
+                ),
+                (
+                    f"{START_SCENE_SUBSCRIBER_NODE}.inputs:messagePackage",
+                    "std_msgs",
+                ),
+                (
+                    f"{START_SCENE_SUBSCRIBER_NODE}.inputs:messageSubfolder",
+                    "msg",
+                ),
+                (
+                    f"{START_SCENE_SUBSCRIBER_NODE}.inputs:messageName",
+                    "Bool",
+                ),
+            ],
+        },
+    )
+
+    print(
+        "[simulation] 시작 신호 Subscriber 생성: "
+        f"{START_SCENE_TOPIC} (std_msgs/msg/Bool)"
+    )
+
+
+# =====================================================================
 # Stage 준비 함수
 # =====================================================================
 
@@ -352,6 +423,7 @@ def prepare_stage() -> None:
 
     _build_emergency_stop_graph(stage)
     _build_shoe_stop_graph(stage)
+    _build_start_scene_graph(stage)
     _disable_missing_dome_light(stage)
 
     # 기존 ConveyorBeltGraph 전체는 유지합니다.
@@ -770,6 +842,12 @@ class SimulationNode:
         self._shoe_stop_data_attr = None
         self._shoe_stop_pulse_pending = False
 
+        # /control/start_scene Bool은 ROS2 Bridge Subscriber 출력에서 읽습니다.
+        self._start_scene_data_attr = None
+        self._start_scene_attr_wait_logged = False
+        self._scene_started = False
+        self._previous_start_scene_signal = False
+
         initial_working_speed = self._get_attribute_float(
             self._working_conveyor_velocity_attr,
             default=1.0,
@@ -802,21 +880,62 @@ class SimulationNode:
             f"{TRIGGER_PATH}"
         )
 
-        spawn_signal = self._read_shoe_spawn_signal()
-        self._activate_random_shoe()
-
-        self._next_activation_time = (
-            self._timeline.get_current_time()
-            + SHOE_ACTIVATION_DELAY_SEC
-        )
-
-        print("[simulation] 시작 신발 즉시 활성화")
+        self._next_activation_time: float | None = None
 
         print(
-            "[simulation] 이후 "
-            f"{SHOE_ACTIVATION_DELAY_SEC}초마다 "
-            "비활성 신발 랜덤 활성화"
+            "[simulation] 시작 신호 대기: "
+            f"{START_SCENE_TOPIC} (std_msgs/msg/Bool)"
         )
+
+    def _find_start_scene_data_attribute(self):
+        """start_scene Subscriber가 만든 Bool 출력 포트를 찾습니다."""
+
+        subscriber_path = (
+            f"{START_SCENE_GRAPH_PATH}/{START_SCENE_SUBSCRIBER_NODE}"
+        )
+        subscriber_prim = self._stage.GetPrimAtPath(subscriber_path)
+
+        if not subscriber_prim.IsValid():
+            return None
+
+        for attr_name in ("outputs:data", "outputs:data.data"):
+            attr_path = f"{subscriber_path}.{attr_name}"
+            graph_attr = og.Controller.attribute(attr_path)
+
+            if graph_attr is not None:
+                if not self._start_scene_attr_wait_logged:
+                    print(
+                        "[simulation] 시작 신호 Bool 출력 확인: "
+                        f"{attr_path}"
+                    )
+                    self._start_scene_attr_wait_logged = True
+                return graph_attr
+
+        return None
+
+    def _read_start_scene(self) -> bool:
+        """ROS2 Bridge Subscriber에서 /control/start_scene Bool을 읽습니다."""
+
+        if self._start_scene_data_attr is None:
+            self._start_scene_data_attr = (
+                self._find_start_scene_data_attribute()
+            )
+
+        if self._start_scene_data_attr is None:
+            return False
+
+        try:
+            value = og.Controller.get(self._start_scene_data_attr)
+        except Exception as exc:
+            self._start_scene_data_attr = None
+            self._start_scene_attr_wait_logged = False
+            print(
+                "[simulation] 시작 신호 값 읽기 실패: "
+                f"{exc}"
+            )
+            return False
+
+        return bool(value) if value is not None else False
 
     # =================================================================
     # Shoebox 초기화
@@ -1050,20 +1169,8 @@ class SimulationNode:
             shoe_path
         )
 
-    def _activate_random_shoe(
-        self,
-        spawn_signal: bool,
-    ) -> None:
-        # False이면 스폰하지 않음
-        if not spawn_signal:
-            self._previous_shoe_spawn_signal = False
-            return
-
-        # True가 계속 유지 중이면 중복 스폰하지 않음
-        if self._previous_shoe_spawn_signal:
-            return
-
-        self._previous_shoe_spawn_signal = True
+    def _activate_random_shoe(self) -> None:
+        """비활성 상태인 신발 중 하나를 랜덤하게 활성화합니다."""
 
         candidates: list[str] = []
 
@@ -1509,6 +1616,23 @@ class SimulationNode:
 
         now = self._timeline.get_current_time()
 
+        start_scene_signal = self._read_start_scene()
+
+        if start_scene_signal and not self._previous_start_scene_signal:
+            self._scene_started = True
+            self._activate_random_shoe()
+            self._next_activation_time = (
+                now + SHOE_ACTIVATION_DELAY_SEC
+            )
+            print("[simulation] 시작 신호로 첫 신발 즉시 활성화")
+
+        elif not start_scene_signal and self._previous_start_scene_signal:
+            self._scene_started = False
+            self._next_activation_time = None
+            print(f"[simulation] {START_SCENE_TOPIC}: False 수신")
+
+        self._previous_start_scene_signal = start_scene_signal
+
         while self._pending_stop_trigger_shoes:
             self._pending_stop_trigger_shoes.pop(0)
             self._start_stop_trigger_sequence()
@@ -1567,7 +1691,11 @@ class SimulationNode:
                     shoe_path
                 )
 
-        if now >= self._next_activation_time:
+        if (
+            self._scene_started
+            and self._next_activation_time is not None
+            and now >= self._next_activation_time
+        ):
             self._activate_random_shoe()
 
             self._next_activation_time = (
