@@ -67,8 +67,8 @@ PLACEMENT_Z = 1.89
 
 SHOE_ASSET_URL = "/home/rokey/Downloads/sneaker_240.usd"
 
-NUM_SHOES_PER_FRAME = 2      # 한 프레임에 흩뿌릴 신발 켤레 수 (좁은 컨베이어라 2켤레로 축소)
-DEFECT_RATIO = 0.7        # 훼손(tear 또는 scratch) 비율 (클래스 균형용, 필요시 조정)
+NUM_SHOES_PER_FRAME = 1      # 한 프레임에 흩뿌릴 신발 켤레 수 (좁은 컨베이어라 2켤레로 축소)
+DEFECT_RATIO = 0       # 훼손(tear 또는 scratch) 비율 (클래스 균형용, 필요시 조정)
 # "shoe"는 신발 전체(항상 부여, 정상/훼손 구분 없음). tear/scratch는 훼손 부위에 실제로
 # 만드는 별도의 작은 프림(패치)에 붙이는 라벨이라, bbox/segmentation이 훼손 부위만 잡는다.
 # (GeomSubset에 라벨을 걸어봤는데 Replicator의 instance_segmentation/bbox 애노테이터가
@@ -171,6 +171,20 @@ def _cache_mesh_topology(mesh):
     if st_primvar and st_primvar.IsIndexed():
         st_indices = np.array(st_primvar.GetIndices(), dtype=np.int64)
 
+    # 이 메시는 face-varying(코너별) authored normals를 갖고 있다. counts/indices만
+    # 자르고 복구하면 normals 배열 길이가 안 맞아서 Hydra가 매 면 삭제 이후로 계속
+    # smooth-normal로 대체 렌더링해버리는 버그가 있었다 — normals도 같은 corner_mask로
+    # 같이 잘라내고, 복구 시 원본 값으로 되돌려야 한다.
+    normals_attr = mesh.GetNormalsAttr()
+    normals = np.array(normals_attr.Get(), dtype=np.float64) if normals_attr.HasAuthoredValue() else None
+
+    # 원본 에셋에 face-varying "Col" 컬러 primvar(정점 채색/마스크용, 47920개, non-indexed)도
+    # 있어서 normals와 똑같은 이유로 같이 잘라내고 복구해야 한다.
+    col_primvar = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("Col")
+    col_values = None
+    if col_primvar and col_primvar.HasAuthoredValue() and not col_primvar.IsIndexed():
+        col_values = np.array(col_primvar.Get(), dtype=np.float64)
+
     return {
         "counts": counts,
         "indices": indices,
@@ -178,6 +192,10 @@ def _cache_mesh_topology(mesh):
         "face_normals": face_normals,
         "st_primvar": st_primvar,
         "st_indices": st_indices,
+        "normals_attr": normals_attr,
+        "normals": normals,
+        "col_primvar": col_primvar,
+        "col_values": col_values,
     }
 
 
@@ -243,6 +261,12 @@ def cut_faces_near_random_point(mesh, topo, rng):
 
     if topo["st_indices"] is not None:
         topo["st_primvar"].SetIndices(Vt.IntArray(topo["st_indices"][corner_mask].tolist()))
+
+    if topo["normals"] is not None:
+        topo["normals_attr"].Set(Vt.Vec3fArray([Gf.Vec3f(*n) for n in topo["normals"][corner_mask]]))
+
+    if topo["col_values"] is not None:
+        topo["col_primvar"].Set(Vt.Vec4fArray([Gf.Vec4f(*c) for c in topo["col_values"][corner_mask]]))
 
     return centroids[seed], axis1, axis2, normal, rx, ry
 
@@ -321,6 +345,10 @@ def restore_mesh_topology(mesh, topo):
     mesh.GetFaceVertexIndicesAttr().Set(topo["indices"].tolist())
     if topo["st_indices"] is not None:
         topo["st_primvar"].SetIndices(Vt.IntArray(topo["st_indices"].tolist()))
+    if topo["normals"] is not None:
+        topo["normals_attr"].Set(Vt.Vec3fArray([Gf.Vec3f(*n) for n in topo["normals"]]))
+    if topo["col_values"] is not None:
+        topo["col_primvar"].Set(Vt.Vec4fArray([Gf.Vec4f(*c) for c in topo["col_values"]]))
 
 
 def spawn_shoes(stage, materials):
@@ -427,6 +455,18 @@ def build_cameras(stage):
 
 
 def run():
+    # 스테이지(카메라의 ROS_D455_1 등 OmniGraph)를 열기 전에 ROS2 브릿지 확장을 먼저
+    # 켜야 한다. 확장이 꺼진 상태로 스테이지를 열면 ROS2CameraHelper 같은 노드 타입이
+    # "unregistered node type"으로 실패한 채 굳어버리고, 나중에 확장을 켜도(재생을
+    # 껐다 켜도) 그 실패한 노드 인스턴스는 자동으로 재바인딩되지 않는다 — 스테이지를
+    # 다시 열어야만 고쳐지는데, 그럴 바엔 애초에 열기 전에 켜두는 게 안전하다.
+    # set_extension_enabled_immediate는 앱이 아직 다 초기화되기 전에 동기적으로 강제
+    # 등록하려다 omni.graph.core 쪽과 충돌해서 세그폴트가 났다. Isaac Sim 표준 헬퍼
+    # (enable_extension)를 쓰면 내부적으로 안전한 절차로 처리된다.
+    from isaacsim.core.utils.extensions import enable_extension
+    enable_extension("isaacsim.ros2.bridge")
+    simulation_app.update()
+
     print(f"[SDG] step: open_stage {STAGE_PATH}", flush=True)
     omni.usd.get_context().open_stage(STAGE_PATH)
     stage = omni.usd.get_context().get_stage()
@@ -436,6 +476,18 @@ def run():
     # 다음 프레임 노출을 조정해서, 같은 재질인데도 프레임마다 밝기/톤이 달라 보인다
     # (rgb_0001에서 같은 'normal' 재질이 갈색으로 보인 원인). 고정 노출로 끈다.
     carb.settings.get_settings().set("/rtx/post/histogram/enabled", False)
+    # RTX Real-Time(RayTracedLighting)은 프레임 간 누적 버퍼가 완전히 안 지워져서, tear를
+    # 껐다 켰다 해도 이전 프레임의 흔적이 잔상처럼 옅게 남는 문제가 실측으로 확인됐다.
+    # PathTracing(RTX-Interactive)은 매 프레임 독립적으로 수렴해서 이 잔상이 없다 — 그래서
+    # 실제 데이터 생성(headless)은 PathTracing을 쓴다. GUI로 띄울 때는 데이터 생성용이
+    # 아니라 씬 확인용이고, PathTracing은 GUI에서 재생 버튼 등과 충돌해 크래시 나는 걸
+    # 확인했으므로 GUI는 그냥 Real-Time(RayTracedLighting)으로 켠다.
+    if args.headless:
+        carb.settings.get_settings().set("/rtx/rendermode", "PathTracing")
+        carb.settings.get_settings().set("/rtx/pathtracing/spp", 32)
+        carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", 32)
+    else:
+        carb.settings.get_settings().set("/rtx/rendermode", "RaytracedLighting")
     # 실제 환경(RectLight 등 기존 조명·바닥 재질)을 그대로 쓰므로 별도 조명/바닥을 만들지 않는다.
 
     print("[SDG] step: create_condition_materials", flush=True)
@@ -484,16 +536,26 @@ def run():
         rep.orchestrator.step(rt_subframes=RT_SUBFRAMES, delta_time=0.0)
 
     writer.detach()
-    for rp in render_products:
-        rp.destroy()
     rep.orchestrator.wait_until_complete()
-    timeline.stop()
+    # headless는 이 직후 바로 종료되니 안전하게 정리하지만, GUI 모드는 사용자가 생성 후
+    # 씬을 계속 보거나 재생 버튼을 누를 수 있어서 render_product를 파괴/timeline 정지하면
+    # (이미 파괴된 render_product를 참조하게 돼) 재생 시 크래시가 난다. GUI에선 그대로 둔다.
+    if args.headless:
+        for rp in render_products:
+            rp.destroy()
+        timeline.stop()
     print("[SDG] Done.")
 
 
 run()
 
-while simulation_app.is_running():
-    simulation_app.update()
-
-simulation_app.close()
+# headless는 GUI로 볼 사람이 없으니 끝나면 바로 닫는다. is_running()이 자연스럽게
+# False가 되길 기다리는 idle 루프에 헤드리스 프로세스가 여러 개 안 꺼진 채로 계속
+# GPU 메모리를 붙잡고 쌓여서 OOM을 유발한 적이 있어서, headless일 땐 그 루프를
+# 아예 안 타고 바로 종료하도록 바꿨다.
+if args.headless:
+    simulation_app.close()
+else:
+    while simulation_app.is_running():
+        simulation_app.update()
+    simulation_app.close()

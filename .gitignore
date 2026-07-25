@@ -17,3 +17,7 @@ __pycache__/
 *.npy
 *.json
 *.txt
+*.csv
+*.zip
+runs/
+dataset_*/
