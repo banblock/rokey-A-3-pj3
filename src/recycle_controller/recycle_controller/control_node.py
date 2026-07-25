@@ -160,6 +160,14 @@ class ControlNode(Node):
             20
         )
 
+        #db
+        self.inventory_ui_pub = self.create_publisher(
+            String,
+            "/control/items",
+            20,
+        )
+
+
         # --------------------------------------------------
         # Service Client
         # --------------------------------------------------
@@ -344,205 +352,7 @@ class ControlNode(Node):
             f"count={len(batch.shoes)}"
         )
 
-    # ======================================================
-    # FMS 상태 처리
-    # ======================================================
-
-    # def fms_status_callback(self, msg: String) -> None:
-    #     """
-    #     FMS 입력 예시:
-
-    #     AMR 준비 완료:
-    #     {
-    #         "event": "PICKUP_READY",
-    #         "amr_id": "shoe_type_1_amr_1",
-    #         "shoe_type": "shoe_type_1"
-    #     }
-
-    #     요청 수락:
-    #     {
-    #         "event": "REQUEST_ACCEPTED",
-    #         "request_id": "...",
-    #         "amr_id": "shoe_type_1_amr_1",
-    #         "shoe_type": "shoe_type_1"
-    #     }
-
-    #     요청 거절:
-    #     {
-    #         "event": "REQUEST_REJECTED",
-    #         "request_id": "...",
-    #         "reason": "no available amr"
-    #     }
-
-    #     운송 완료:
-    #     {
-    #         "event": "TRANSPORT_COMPLETED",
-    #         "request_id": "...",
-    #         "amr_id": "shoe_type_1_amr_1"
-    #     }
-
-    #     교착:
-    #     {
-    #         "event": "DEADLOCK",
-    #         "amr_id": "shoe_type_1_amr_1",
-    #         "shoe_type": "shoe_type_1",
-    #         "reason": "path blocked"
-    #     }
-    #     """
-
-    #     try:
-    #         data = json.loads(msg.data)
-    #         event = str(data["event"])
-
-    #     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-    #         self.get_logger().error(
-    #             f"Invalid FMS status: {exc}"
-    #         )
-    #         return
-
-    #     if event == "PICKUP_READY":
-    #         self._handle_pickup_ready(data)
-
-    #     elif event == "REQUEST_ACCEPTED":
-    #         self._handle_request_accepted(data)
-
-    #     elif event == "REQUEST_REJECTED":
-    #         self._handle_request_rejected(data)
-
-    #     elif event == "TRANSPORTING":
-    #         self._handle_transporting(data)
-
-    #     elif event == "TRANSPORT_COMPLETED":
-    #         self._handle_transport_completed(data)
-
-    #     elif event == "RETURNING":
-    #         self._handle_returning(data)
-
-    #     elif event == "DEADLOCK":
-    #         self._handle_deadlock(data)
-
-    #     elif event == "ERROR":
-    #         self._handle_amr_error(data)
-
-    #     elif event == "RESTARTED":
-    #         self._handle_restarted(data)
-
-    #     else:
-    #         self.get_logger().warning(
-    #             f"Unknown FMS event: {event}"
-    #         )
-
- 
-    # def _handle_amr_error(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     amr_id = str(data["amr_id"])
-    #     shoe_type = str(data["shoe_type"])
-
-    #     with self.state_lock:
-    #         if self._is_valid_amr(shoe_type, amr_id):
-    #             self.amr_states[
-    #                 shoe_type
-    #             ][amr_id] = AmrState.ERROR
-
-    # def _handle_restarted(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     amr_id = str(data["amr_id"])
-    #     shoe_type = str(data["shoe_type"])
-
-    #     with self.state_lock:
-    #         if self._is_valid_amr(shoe_type, amr_id):
-    #             self.amr_states[
-    #                 shoe_type
-    #             ][amr_id] = AmrState.RETURNING
-
-    #     self.get_logger().info(
-    #         f"AMR restarted: {amr_id}"
-    #     )
-
-    # ======================================================
-    # 재시작 요청
-    # ======================================================
-
-    # def request_fms_restart(
-    #     self,
-    #     amr_id: str,
-    #     shoe_type: str,
-    # ) -> None:
-    #     """
-    #     운영자가 물리적 교착을 해소한 후 호출할 메서드.
-    #     추후 ROS service callback으로 연결할 수 있다.
-    #     """
-
-    #     if not self._is_valid_amr(shoe_type, amr_id):
-    #         raise ValueError(f"Invalid AMR: {amr_id}")
-
-    #     with self.state_lock:
-    #         state = self.amr_states[shoe_type][amr_id]
-
-    #         if state != AmrState.DEADLOCK:
-    #             raise RuntimeError(
-    #                 f"AMR is not in deadlock state: {state}"
-    #             )
-
-    #     request = {
-    #         "command": "RESTART",
-    #         "amr_id": amr_id,
-    #         "shoe_type": shoe_type,
-    #         "timestamp": self._now(),
-    #     }
-
-    #     msg = String()
-    #     msg.data = json.dumps(request)
-
-    #     self.fms_restart_pub.publish(msg)
-
-    #     self.get_logger().warning(
-    #         f"FMS restart requested: {amr_id}"
-    #     )
-
-    # ======================================================
-    # 상태 관리
-    # ======================================================
-
-    # def publish_control_status(self) -> None:
-    #     with self.state_lock:
-    #         status = {
-    #             "timestamp": self._now(),
-    #             "queue_counts": {
-    #                 shoe_type: len(queue)
-    #                 for shoe_type, queue
-    #                 in self.shoe_queues.items()
-    #             },
-    #             "pending_vision_count": len(
-    #                 self.pending_classified_shoes
-    #             ),
-    #             "pending_transport_count": len(
-    #                 self.pending_batches
-    #             ),
-    #             "active_transport_count": len(
-    #                 self.active_batches
-    #             ),
-    #             "amr_states": {
-    #                 shoe_type: states.copy()
-    #                 for shoe_type, states
-    #                 in self.amr_states.items()
-    #             },
-    #         }
-
-    #     msg = String()
-    #     msg.data = json.dumps(
-    #         status,
-    #         ensure_ascii=False,
-    #     )
-
-    #     self.control_status_pub.publish(msg)
-
+    
     # ======================================================
     # MongoDB
     # ======================================================
@@ -566,6 +376,37 @@ class ControlNode(Node):
                 f"Failed to save shoe: {exc}"
             )
 
+        self.publish_inventory_to_ui()
+
+
+        
+
+    def publish_inventory_to_ui(self) -> None:
+        try:
+            items = self.db.get_items()
+
+            payload = {
+                "items": [
+                    item.to_dict()
+                    for item in items
+                ],
+                "count": len(items),
+            }
+
+            msg = String()
+            msg.data = json.dumps(
+                payload,
+                ensure_ascii=False,
+                default=str,
+            )
+
+            self.inventory_ui_pub.publish(msg)
+
+        except Exception as exc:
+            self.get_logger().error(
+                f"Failed to publish inventory data: {exc}"
+            )
+        
     # ======================================================
     # service callback
     # ======================================================
