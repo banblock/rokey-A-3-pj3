@@ -12,48 +12,32 @@ import os
 import traceback
 import math
 import numpy as np
+import omni.graph.core as og
+import usdrt.Sdf
+import omni.usd
+import omni.timeline
+from pxr import Usd
 
+from isaacsim.core.api import World
 from isaacsim.core.utils.extensions import enable_extension
+from isaacsim.core.utils.stage import add_reference_to_stage
+from isaacsim.core.prims import SingleXFormPrim
+from isaacsim.storage.native import get_assets_root_path
+
+from fleet_config_test1 import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
+
 
 for extension_name in (
     "omni.graph.core",
     "omni.graph.action_nodes",
     "omni.graph.action_nodes_core",
-    "omni.graph.scriptnode",
     "isaacsim.ros2.bridge",
     "omni.physx.graph",
     "isaacsim.asset.gen.conveyor",
 ):
     enable_extension(extension_name)
 
-# Extension 초기화
 simulation_app.update()
-
-import omni.graph.core as og
-import usdrt.Sdf
-import omni.usd
-import omni.timeline
-
-from pxr import Usd
-
-from isaacsim.core.api import World
-from isaacsim.core.utils.stage import add_reference_to_stage
-from isaacsim.core.prims import SingleXFormPrim
-from isaacsim.storage.native import get_assets_root_path
-
-from fleet_config_test1 import (
-    NODE_GRAPH,
-    ROBOT_HOME_NODE,
-    ROBOT_SHOE_TYPE,
-    SHOE_TYPES,
-    robot_spawn_yaw,
-)
-
-from simulation_node_10 import (
-    SimulationNode,
-    create_simulation_node,
-    prepare_stage,
-)
 
 WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
@@ -66,7 +50,7 @@ NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_cart
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/stage_v19.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/recycle_test1.usd"
 )
 
 
@@ -79,11 +63,6 @@ def load_usd_stage(usd_path: str) -> Usd.Stage:
         )
 
     usd_context = omni.usd.get_context()
-    timeline = omni.timeline.get_timeline_interface()
-    timeline.stop()
-
-    for _ in range(3):
-        simulation_app.update()
 
     print(f"[Stage] 열기: {absolute_path}")
     usd_context.open_stage(absolute_path)
@@ -93,31 +72,13 @@ def load_usd_stage(usd_path: str) -> Usd.Stage:
 
     stage = usd_context.get_stage()
 
-    if stage is None:
-        raise RuntimeError("USD Stage 열기 실패")
-
-    for conveyor_path in (
-        "/World/ReturnCell/convey",
-        "/World/ReturnCell/convey_01",
-        "/World/ReturnCell/convey_02",
-    ):
-        conveyor_prim = stage.GetPrimAtPath(conveyor_path)
-
-        if not conveyor_prim.IsValid():
-            raise RuntimeError(
-                f"컨베이어 Prim을 찾을 수 없습니다: {conveyor_path}"
-            )
-
-        if conveyor_prim.HasPayload() and not conveyor_prim.IsLoaded():
-            conveyor_prim.Load()
-
-    for _ in range(20):
-        simulation_app.update()
-
     stage.SetTimeCodesPerSecond(180.0)
 
     timeline = omni.timeline.get_timeline_interface()
     timeline.set_target_framerate(180.0)
+
+    if stage is None:
+        raise RuntimeError("USD Stage 열기 실패")
 
     print(f"[Stage] 로딩 완료: {stage.GetRootLayer().identifier}")
 
@@ -184,32 +145,9 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
 
 def main() -> None:
     world = None
-    simulation_node: SimulationNode | None = None
 
     try:
-        stage = load_usd_stage(USD_PATH)
-
-        # DomeLight 텍스처 확인
-        from pxr import UsdLux
-
-        dome_light_found = False
-
-        for prim in stage.TraverseAll():
-            if prim.IsA(UsdLux.DomeLight):
-                dome_light_found = True
-                dome_light = UsdLux.DomeLight(prim)
-
-                print(f"[DomeLight] 경로: {prim.GetPath()}")
-                print(
-                    f"[DomeLight] 텍스처: "
-                    f"{dome_light.GetTextureFileAttr().Get()}"
-                )
-
-        if not dome_light_found:
-            print("[DomeLight] 현재 Stage에 DomeLight가 없습니다.")
-
-        # World.reset() 전에 오류가 나는 구형 그래프와 충돌 노드를 끕니다.
-        prepare_stage()
+        load_usd_stage(USD_PATH)
 
         for _ in range(5):
             simulation_app.update()
@@ -229,23 +167,19 @@ def main() -> None:
         print("[World] reset")
         world.reset()
 
-        # 이후 토픽/서비스/Stage 제어 기능은 simulation_node.py에 추가합니다.
-        simulation_node = create_simulation_node()
+        for _ in range(5):
+            simulation_app.update()
 
         print("[World] play")
 
         while simulation_app.is_running():
             world.step(render=True)
-            simulation_node.update()
 
     except Exception as error:
         print(f"[Main 오류] {error}")
         traceback.print_exc()
 
     finally:
-        if simulation_node is not None:
-            simulation_node.shutdown()
-
         if world is not None:
             world.stop()
 
