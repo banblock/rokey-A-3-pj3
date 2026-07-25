@@ -27,6 +27,8 @@ import json
 import math
 import sys
 
+from rclpy.duration import Duration
+
 # fleet_config.py는 이 ROS 패키지 밖(isaacpjt/sorting_line/)에 있는 순수 데이터
 # 모듈이다 — fms_node.py와 동일한 이유로 패키지 안으로 옮기지 않았다 (Isaac Sim
 # 스크립트도 rclpy 없이 그대로 가져다 쓴다). setup.py의 data_files로 같이 설치해두고
@@ -64,6 +66,21 @@ MAX_ANGULAR_RPS = 1.2
 K_LINEAR = 0.8
 K_ANGULAR = 1.5
 CONTROL_PERIOD_SEC = 0.05    # 20Hz
+# 도착 후 단 한 번만 0 속도를 보내면, 물리 엔진의 잔여 관성(PhysX residual
+# velocity)이 안 죽어서 로봇이 도착한 뒤에도 계속 미세하게 미끄러지는 문제가
+# 있었다 — 실제로 fleet_driver/FMS는 명령을 딱 한 번만 보내는 걸 로그로
+# 확인했으니 코드가 반복해서 잘못 보내는 게 아니라 순수 물리 잔여 속도
+# 문제였다. 완전 정지가 실제로 중요한 지점(PICKUP_X, PICKUP_WAIT_X처럼
+# 로봇끼리 만나서 실제로 겹치면 안 되는 자리)에서만, 도착 직후 이 시간
+# 동안 0 속도를 반복 전송해서 PhysX가 확실히 정지할 시간을 벌어준다.
+STOP_HOLD_SEC = 0.5
+
+
+def _is_pickup_area_node(node_id):
+    """PICKUP_X, PICKUP_WAIT_X, PICKUP_WAIT2_X... 처럼 로봇이 실제로 완전히
+    멈춰서 다른 로봇과 자리를 주고받아야 하는 노드인지 판정한다. PICKUP_X_APPROACH나
+    본선 세분화 칸("__" 포함)은 진짜 정지 지점이 아니라서 제외한다."""
+    return node_id is not None and node_id.startswith("PICKUP_") and "APPROACH" not in node_id and "__" not in node_id
 
 
 def _yaw_from_quaternion(q):
@@ -122,6 +139,7 @@ class FleetDriver(Node):
             "x": 0.0, "y": 0.0, "yaw": 0.0, "has_odom": False,
             "spawn_x": spawn_x, "spawn_y": spawn_y, "spawn_yaw": spawn_yaw,
             "target_xy": None, "target_node": None, "target_is_final": True,
+            "stop_until": None,  # 이 시각까지는 0 속도를 계속 반복 전송(아래 STOP_HOLD_SEC 참고)
             "cmd_pub": self.create_publisher(Twist, f"/{robot_id}/cmd_vel", 10),
         }
         # default-arg로 robot_id를 바인딩 — 그냥 클로저로 캡처하면 루프 후반 값으로
@@ -157,7 +175,16 @@ class FleetDriver(Node):
         self.robots[robot_id]["target_is_final"] = data.get("is_final_hop", True)
 
     def _control_tick(self):
+        now = self.get_clock().now()
         for robot_id, robot in self.robots.items():
+            if robot["stop_until"] is not None:
+                # PICKUP_X/PICKUP_WAIT_X 도착 직후 — PhysX 잔여 관성이 죽을
+                # 때까지 0 속도를 반복 전송한다(STOP_HOLD_SEC 동안).
+                if now < robot["stop_until"]:
+                    robot["cmd_pub"].publish(Twist())
+                    continue
+                robot["stop_until"] = None
+
             target = robot["target_xy"]
             if target is None or not robot["has_odom"]:
                 continue
@@ -177,6 +204,8 @@ class FleetDriver(Node):
                 # 다음 홉 명령을 보내줄 거라고 가정한다.
                 if is_final:
                     self._stop(robot_id)
+                    if _is_pickup_area_node(arrived_node):
+                        robot["stop_until"] = now + Duration(seconds=STOP_HOLD_SEC)
                 self._publish_status(robot_id, "arrived", arrived_node)
                 continue
 

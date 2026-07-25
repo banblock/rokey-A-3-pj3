@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'conveyor_control'
+package_name = 'vision_node'
 
 setup(
     name=package_name,
@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='rokey',
     maintainer_email='junh001224@gmail.com',
-    description='TODO: Package description',
+    description='YOLO 기반 신발 검사 vision 노드',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -23,9 +23,9 @@ setup(
         ],
     },
     entry_points={
-    "console_scripts": [
-        "conveyor_controller = conveyor_control.conveyor_controller:main",
-        "shoe_detector = conveyor_control.shoe_detector:main",
-    ],
-},
+        'console_scripts': [
+            'vision_node = vision_node.vision_node:main',
+            'capture_cameras = vision_node.capture_cameras:main',
+        ],
+    },
 )

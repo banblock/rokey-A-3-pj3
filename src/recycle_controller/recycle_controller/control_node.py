@@ -193,7 +193,7 @@ class ControlNode(Node):
             f"Vision result received: "
             f"id={msg.color}, "
             f"type={msg.size}, "
-            f"reusable={reusable}"
+            f"discard={reusable}"
         )
 
     def _publish_conveyor_sort_command(

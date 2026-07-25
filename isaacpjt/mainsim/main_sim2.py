@@ -25,7 +25,7 @@ from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
 
 from fleet_config_test1 import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
-from simulation_node_5 import SimulationNode, create_simulation_node, prepare_stage
+from simulation_node_8 import SimulationNode, create_simulation_node, prepare_stage
 
 
 for extension_name in (
@@ -52,7 +52,7 @@ NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_cart
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/stage_v13.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/stage_v18.usd"
 )
 
 
@@ -214,27 +214,6 @@ def main() -> None:
 
         print("[World] reset")
         world.reset()
-
-        for _ in range(5):
-            simulation_app.update()
-
-        print("\n[누락 텍스처 경로 검색]")
-
-        target_name = "color_0C0C0C.exr"
-        found = False
-
-        for prim in world.stage.TraverseAll():
-            for attr in prim.GetAttributes():
-                value = attr.Get()
-
-                if value is not None and target_name in str(value):
-                    found = True
-                    print(f"Prim 경로: {prim.GetPath()}")
-                    print(f"속성 이름: {attr.GetName()}")
-                    print(f"속성 값: {value}")
-
-        if not found:
-            print(f"[확인] Stage 속성에서 {target_name} 경로를 찾지 못했습니다.")
 
         # 이후 토픽/서비스/Stage 제어 기능은 simulation_node.py에 추가합니다.
         simulation_node = create_simulation_node()
