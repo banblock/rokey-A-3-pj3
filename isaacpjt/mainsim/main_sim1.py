@@ -52,7 +52,7 @@ NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_cart
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/stage_v16.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/stage_v17.usd"
 )
 
 
