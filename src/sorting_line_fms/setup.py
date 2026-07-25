@@ -25,6 +25,10 @@ setup(
         # fleet_config_test1.py — 신발 종류 1개(A)만 남긴 최소 테스트용 그래프.
         # fms_node.py가 지금 이걸 import해서 쓰므로 반드시 같이 설치해야 한다.
         ('share/' + package_name, ['../../isaacpjt/sorting_line/fleet_config_test1.py']),
+        # marker_config.py — AGV 마커(AprilTag) ID/노드 매핑 순수 데이터 모듈.
+        # Isaac Sim 씬(1_conveyor_sorter_env.py)과 agv_marker_localizer.py가
+        # fleet_config.py와 같은 방식으로 같이 가져다 쓴다.
+        ('share/' + package_name, ['../../isaacpjt/sorting_line/marker_config.py']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
@@ -44,6 +48,7 @@ setup(
             'fleet_driver = sorting_line_fms.fleet_driver:main',
             'main_control_stub = sorting_line_fms.main_control_stub:main',
             'crossing_test_fms = sorting_line_fms.crossing_test_fms:main',
+            'agv_marker_localizer = sorting_line_fms.agv_marker_localizer:main',
         ],
     },
 )
