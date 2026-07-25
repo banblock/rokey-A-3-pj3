@@ -14,3 +14,6 @@ __pycache__/
 *.jpg
 *.jpeg
 *.mdl
+*.npy
+*.json
+*.txt
