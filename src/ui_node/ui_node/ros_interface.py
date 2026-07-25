@@ -150,18 +150,6 @@ class DashboardRosNode(Node):
             10,
             callback_group=self.callback_group,
         )
-    # def _alert_callback(self, msg: String) -> None:
-    #     data = self._parse_json(msg.data, ALERT_TOPIC)
-
-    #     if data is not None:
-    #         self.signals.alert.emit(data)
-        # self.create_subscription(
-        #     String,
-        #     INVENTORY_TOPIC,
-        #     self._inventory_callback,
-        #     10,
-        #     callback_group=self.callback_group,
-        # )
 
         self.create_subscription(
             Int32,
