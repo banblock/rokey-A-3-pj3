@@ -44,7 +44,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 # fms_node.py/crossing_test_fms.py가 /fms/commands를 발행할 때 쓰는 QoS와
 # 반드시 똑같이 맞춰야 한다 — TRANSIENT_LOCAL이라야, 이 노드(구독자)가 FMS
@@ -160,7 +160,7 @@ class FleetDriver(Node):
 
         self.status_pub = self.create_publisher(String, "/amr/status", 10)
         self.create_subscription(String, "/fms/commands", self._on_command, _COMMAND_QOS)
-        self.create_subscription(String, "/fms/emergency_stop", self._on_emergency_stop, _COMMAND_QOS)
+        self.create_subscription(Bool, "/fms/emergency_stop", self._on_emergency_stop, _COMMAND_QOS)
 
         for robot_id in self.ROBOT_HOME_NODE:
             self._ensure_robot(robot_id)
@@ -213,10 +213,9 @@ class FleetDriver(Node):
         robot["has_odom"] = True
 
     def _on_emergency_stop(self, msg):
-        data = json.loads(msg.data)
-        self._emergency_stopped = data.get("stop", True)
+        self._emergency_stopped = msg.data
         if self._emergency_stopped:
-            self.get_logger().error(f"[비상 정지] 전체 AMR 정지 — 사유: {data.get('reason', '(명시 안 됨)')}")
+            self.get_logger().error("[비상 정지] 전체 AMR 정지 (사유는 fms_node 로그 참고)")
             for robot in self.robots.values():
                 robot["cmd_pub"].publish(Twist())
         else:

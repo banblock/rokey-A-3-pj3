@@ -29,7 +29,7 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 
 from recycle_interfaces.msg import PickupList
 from recycle_interfaces.srv import AmrState
@@ -188,15 +188,16 @@ class FleetManagementSystem(Node):
         # 상황을 더 악화시킬 수 있어, 전체 AMR을 물리적으로 정지시키는 신호도 같이
         # 보낸다. fleet_driver.py는 이 로봇의 종류와 무관하게 모든 로봇의 cmd_vel을
         # 0으로 고정한다 — TRANSIENT_LOCAL이라 늦게(재시작 등으로) 구독해도 마지막
-        # 정지 상태를 그대로 받는다. 해제는 자동으로 되지 않는다(사람이 현장을 확인한
-        # 뒤 {"stop": false}를 같은 토픽에 발행해야 함) — 원인 파악 전에 로봇이
-        # 스스로 재개하면 같은 사고가 반복될 수 있어서 일부러 수동 해제로만 둔다.
+        # 정지 상태를 그대로 받는다. Bool(std_msgs)이라 reason 같은 부가 정보는 못
+        # 싣고, 로그로만 원인을 남긴다.
         self._emergency_stopped = False
-        self.emergency_stop_pub = self.create_publisher(String, "/fms/emergency_stop", RELIABLE_EVENT_QOS)
-        # 자기 자신도 구독해야 한다 — 정지 방송은 FMS가 스스로 켜지만, 해제({"stop":
-        # false})는 사람이 외부에서(예: ros2 topic pub) 발행한다. 구독이 없으면
-        # fleet_driver는 재개해도 FMS의 _dispatch_tick은 영원히 멈춘 채로 남는다.
-        self.create_subscription(String, "/fms/emergency_stop", self._on_emergency_stop, RELIABLE_EVENT_QOS)
+        self.emergency_stop_pub = self.create_publisher(Bool, "/fms/emergency_stop", RELIABLE_EVENT_QOS)
+        # 자기 자신도 구독한다 — /control/emergency_stop(메인 컨트롤)이나 사람이
+        # 직접(ros2 topic pub) /fms/emergency_stop에 False를 보내는 두 경로 모두
+        # 같은 핸들러(_on_emergency_stop)로 처리하고, 해제 시 fleet_driver에도
+        # False를 다시 방송해야 실제로 로봇이 재개한다 — 구독이 없으면 FMS
+        # 자신의 _dispatch_tick 정지 상태가 안 풀린다.
+        self.create_subscription(Bool, "/fms/emergency_stop", self._on_emergency_stop, RELIABLE_EVENT_QOS)
 
         # 메인 컨트롤 노드 → FMS: 신발 종류 하나에 대한 배치(길이 리스트) 작업 지시.
         # 예전에는 FMS가 비전 서비스를 직접 트리거·호출했지만, 이제는 메인 컨트롤
@@ -205,6 +206,10 @@ class FleetManagementSystem(Node):
         # 토픽(PickupList.msg) 구독으로 받는다 — 메인 컨트롤이 응답을 기다릴
         # 필요 없이 계속 쌓아 보내고, FMS는 들어오는 대로 큐에 쌓기만 하면 된다.
         self.create_subscription(PickupList, "/control/pickup", self._on_pickup_list, 10)
+        # 메인 컨트롤 노드가 직접 트리거하는 비상 정지 — True/False 둘 다 같은
+        # 핸들러(_on_emergency_stop)로 처리하고, 내부적으로는 /fms/emergency_stop
+        # 방송과 완전히 동일한 상태(_emergency_stopped)를 공유한다.
+        self.create_subscription(Bool, "/control/emergency_stop", self._on_emergency_stop, RELIABLE_EVENT_QOS)
         # FMS → 메인 컨트롤 노드: 배치 작업 완료 / 교착 상태 발생 알림 (응답 불필요).
         self.amr_state_client = self.create_client(AmrState, "/control/amr_state")
         # "AMR이 PICKUP에 도착해 어떤 신발을 실어야 하는지" / "AMR이 저장소에
@@ -850,24 +855,34 @@ class FleetManagementSystem(Node):
             self.get_logger().info(f"[교착 해소] {robot_id} — {elapsed_sec:.1f}초 만에 재개")
 
     def _on_emergency_stop(self, msg):
-        data = json.loads(msg.data)
-        if data.get("stop", True):
-            return  # 자기 자신이 방금 방송한 정지 신호를 되받은 경우 등 — 이미 처리됨
+        # /control/emergency_stop(메인 컨트롤)과 /fms/emergency_stop(자기 자신의
+        # 방송 + 사람의 수동 ros2 topic pub) 양쪽 다 이 핸들러로 들어온다 —
+        # True/False 둘 다 실제로 상태가 바뀔 때만 동작하도록 멱등하게 짜서,
+        # 자기 자신의 방송을 되받아도(구독 루프) 무한 재귀 없이 그냥 무시된다.
+        if msg.data:
+            self._broadcast_emergency_stop("외부(메인 컨트롤 또는 재방송) 비상 정지 신호 수신")
+        else:
+            self._clear_emergency_stop()
+
+    def _clear_emergency_stop(self):
         if not self._emergency_stopped:
-            return
+            return  # 이미 해제된 상태 — 중복 처리 방지
         self._emergency_stopped = False
-        self.get_logger().warn("[비상 정지 해제] 배차/워치독 재개")
+        self.get_logger().warn("[비상 정지 해제] 배차/워치독 재개, 전체 AMR에도 해제 방송")
+        msg = Bool()
+        msg.data = False
+        self.emergency_stop_pub.publish(msg)  # fleet_driver도 이걸 받아야 실제로 재개함
 
     def _broadcast_emergency_stop(self, reason):
         if self._emergency_stopped:
             return  # 이미 정지 방송한 상태 — 중복 발행/로그 스팸 방지
         self._emergency_stopped = True
-        msg = String()
-        msg.data = json.dumps({"stop": True, "reason": reason})
+        msg = Bool()
+        msg.data = True
         self.emergency_stop_pub.publish(msg)
         self.get_logger().error(
-            f"[비상 정지] 교착 반복 임계치({DEADLOCK_NOTIFY_THRESHOLD}회) 초과 — 전체 AMR 정지 방송 "
-            f"({reason}). 원인 확인 후 /fms/emergency_stop에 {{'stop': false}}를 발행해야 재개됩니다."
+            f"[비상 정지] 전체 AMR 정지 방송 ({reason}). 원인 확인 후 /control/emergency_stop 또는 "
+            f"/fms/emergency_stop에 False를 발행해야 재개됩니다."
         )
 
 
