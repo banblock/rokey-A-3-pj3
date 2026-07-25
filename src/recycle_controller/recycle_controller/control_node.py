@@ -13,27 +13,26 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Int32, String, Bool
+from std_srvs.srv import Trigger
 from recycle_interfaces.msg import PickupList, ShoeInspectionResult
+from recycle_interfaces.srv import AmrState
 
 
-SHOE_TYPES = (
-    "shoe_type_1",
-    "shoe_type_2",
-    "shoe_type_3",
-    "shoe_type_4",
-)
+# SHOE_TYPES = (
+#     "shoe_type_1",
+#     "shoe_type_2",
+#     "shoe_type_3",
+#     "shoe_type_4",
+# )
 
 BATCH_SIZE = 5
 
+START_SERVICE = "/control/start"
+PAUSE_SERVICE = "/control/pause"
+RESTART_SERVICE = "/control/restart"
+STOP_SERVICE = "/control/stop"
+RESET_SERVICE = "/control/reset"
 
-class AmrState:
-    UNKNOWN = "UNKNOWN"
-    READY = "READY"
-    RESERVED = "RESERVED"
-    TRANSPORTING = "TRANSPORTING"
-    RETURNING = "RETURNING"
-    DEADLOCK = "DEADLOCK"
-    ERROR = "ERROR"
 
 
 
@@ -44,6 +43,11 @@ class ControlNode(Node):
 
         self.callback_group = ReentrantCallbackGroup()
         self.state_lock = threading.RLock()
+
+        self.factory_state = False
+        self.factory_pause = False
+
+        self.amr_state = True
 
         self.declare_parameter(
             "mongodb_uri",
@@ -74,17 +78,21 @@ class ControlNode(Node):
         self.pending_classified_shoes: list[list] = []
 
         # 종류별 적재 완료 신발 Queue
-        self.shoe_queues: dict = {
-            0 : [],
-            1 : [],
-            2 : [],
-        }
+        # self.shoe_queues: dict = {
+        #     0 : [],
+        #     1 : [],
+        #     2 : [],
+        # }
 
         # --------------------------------------------------
         # MongoDB
         # --------------------------------------------------
 
-        self.db = None #MongoDBManager(reset_on_start=True)
+        self.db = MongoDBManager(
+            uri=self.mongodb_uri,
+            database_name=self.database_name,
+            reset_on_start=True,
+        )
 
         # --------------------------------------------------
         # Subscribers
@@ -107,7 +115,6 @@ class ControlNode(Node):
             20,
             callback_group=self.callback_group,
         )
-
         # FMS 및 AMR 상태
         # self.fms_status_sub = self.create_subscription(
         #     String,
@@ -135,12 +142,80 @@ class ControlNode(Node):
             20,
         )
 
-        # # FMS 운반 요청 TODO : srv로 변경
-        # self.transport_request_pub = self.create_publisher(
-        #     String,
-        #     "/fms/transport_request",
-        #     20,
-        # )
+        self.conveyor_stop_pub = self.create_publisher(
+            Bool,
+            "/control/emergency_stop",
+            20
+        )
+
+        self.factory_start_pub = self.create_publisher(
+            Bool,
+            "/control/start_scene",
+            20
+        )
+
+        self.alter_pub = self.create_publisher(
+            Int32,
+            "/control/alerts",
+            20
+        )
+
+        # --------------------------------------------------
+        # Service Client
+        # --------------------------------------------------
+
+        
+        self.fms_restart_client = self.create_client(
+            Trigger,
+            "/control/amr_restart"
+        )
+
+        # --------------------------------------------------
+        # Service Server
+        # --------------------------------------------------
+
+        self.ui_start_server = self.create_service(
+            Trigger,
+            START_SERVICE,
+            self.start_callback,
+        )
+
+        self.ui_stop_server = self.create_service(
+            Trigger,
+            STOP_SERVICE,
+            self.stop_callback,
+        )
+
+        self.ui_pause_server = self.create_service(
+            Trigger,
+            PAUSE_SERVICE,
+            self.pause_callback,
+        )
+
+        self.ui_restart_server = self.create_service(
+            Trigger,
+            RESTART_SERVICE,
+            self.restart_callback,
+        )
+
+        self.ui_reset_server = self.create_service(
+            Trigger,
+            RESET_SERVICE,
+            self.reset_callback,
+        )
+
+        self.fms_worning_server = self.create_service(
+            AmrState,
+            "/fms/amr_state",
+            self.worning_callback,
+        )
+
+        self.fms_restart_server = self.create_service(
+            AmrState,
+            "/fms/restart",
+            self.fms_restart_callback,
+        )
+        
 
         # # 교착 해소 후 FMS 재시작 요청
         # self.fms_restart_pub = self.create_publisher(
@@ -221,14 +296,18 @@ class ControlNode(Node):
         Vision 결과가 아니라 이 신호가 수신된 시점에
         종류별 Queue에 신발을 추가한다.
         """
-        with self.state_lock:
-            shoe = self.pending_classified_shoes.pop(0)
+        if not msg.data:
+            return
 
-            if shoe is None:
+
+        with self.state_lock:
+            if len(self.pending_classified_shoes) == 0:
                 self.get_logger().error(
                     f"No vision result for loaded shoe"
                 )
                 return
+            
+            shoe = self.pending_classified_shoes.pop(0)
 
             # self.shoe_queues[shoe[0]].append(shoe)
 
@@ -248,41 +327,6 @@ class ControlNode(Node):
         batch.shoes = [shoe[1]]
         self._publish_transport_request(batch)
 
-    # ======================================================
-    # 운반 요청 생성
-    # ======================================================
-    #일단 하나씩 전달
-    # def dispatch_available_batches(
-    #     self,
-    #     shoe_type: int,
-    # ) -> None:
-    #     """
-    #     각 pickup queue에 stack이 5개 이상 쌓이면 해당 정보를 FMS에 전달
-    #     """
-    #     requests_to_publish = []
-    #     with self.state_lock:
-    #         for i in range(3):
-    #             queue_count = len(self.shoe_queues[shoe_type])
-
-    #             if queue_count < BATCH_SIZE:
-    #                 break
-
-    #             shoes = [
-    #                 self.shoe_queues[shoe_type].pop(0)
-    #                 for _ in range(BATCH_SIZE)
-    #             ]
-
-
-    #             batch = PickupList()
-    #             batch.place = shoe_type
-    #             batch.shoes = shoes
-    #             requests_to_publish.append(batch)
-        
-    #     if len(requests_to_publish) == 0:
-    #         return 
-
-    #     for batch in requests_to_publish:
-    #         self._publish_transport_request(batch)
 
     def _publish_transport_request(
         self,
@@ -388,228 +432,7 @@ class ControlNode(Node):
     #             f"Unknown FMS event: {event}"
     #         )
 
-    # def _handle_pickup_ready(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     amr_id = str(data["amr_id"])
-    #     shoe_type = str(data["shoe_type"])
-
-    #     if not self._is_valid_amr(shoe_type, amr_id):
-    #         self.get_logger().error(
-    #             f"Invalid AMR: {amr_id}"
-    #         )
-    #         return
-
-    #     with self.state_lock:
-    #         self.amr_states[shoe_type][amr_id] = AmrState.READY
-
-    #     self.get_logger().info(
-    #         f"AMR pickup ready: {amr_id}"
-    #     )
-
-    #     self.dispatch_available_batches(shoe_type)
-
-    # def _handle_request_accepted(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     request_id = str(data["request_id"])
-    #     amr_id = str(data["amr_id"])
-    #     shoe_type = str(data["shoe_type"])
-
-    #     with self.state_lock:
-    #         batch = self.pending_batches.pop(
-    #             request_id,
-    #             None,
-    #         )
-
-    #         if batch is None:
-    #             self.get_logger().warning(
-    #                 f"Unknown request accepted: {request_id}"
-    #             )
-    #             return
-
-    #         if not self._is_valid_amr(shoe_type, amr_id):
-    #             self._restore_batch_locked(batch)
-
-    #             self.get_logger().error(
-    #                 f"FMS assigned invalid AMR: {amr_id}"
-    #             )
-    #             return
-
-    #         batch.status = "ACCEPTED"
-    #         batch.assigned_amr_id = amr_id
-
-    #         self.active_batches[request_id] = batch
-
-    #         self.amr_states[shoe_type][amr_id] = (
-    #             AmrState.TRANSPORTING
-    #         )
-
-    #     self._update_batch_status(
-    #         request_id,
-    #         "ACCEPTED",
-    #         amr_id=amr_id,
-    #     )
-
-    #     self.get_logger().info(
-    #         f"Transport accepted: "
-    #         f"request_id={request_id}, "
-    #         f"amr={amr_id}"
-    #     )
-
-    # def _handle_request_rejected(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     request_id = str(data["request_id"])
-    #     reason = str(data.get("reason", "unknown"))
-
-    #     shoe_type = None
-
-    #     with self.state_lock:
-    #         batch = self.pending_batches.pop(
-    #             request_id,
-    #             None,
-    #         )
-
-    #         if batch is None:
-    #             self.get_logger().warning(
-    #                 f"Unknown request rejected: {request_id}"
-    #             )
-    #             return
-
-    #         shoe_type = batch.shoe_type
-    #         self._restore_batch_locked(batch)
-
-    #     self._update_batch_status(
-    #         request_id,
-    #         "REJECTED",
-    #         reason=reason,
-    #     )
-
-    #     self.get_logger().warning(
-    #         f"Transport rejected: "
-    #         f"request_id={request_id}, "
-    #         f"reason={reason}"
-    #     )
-
-    #     if shoe_type is not None:
-    #         self.dispatch_available_batches(shoe_type)
-
-    # def _handle_transporting(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     request_id = str(data["request_id"])
-
-    #     with self.state_lock:
-    #         batch = self.active_batches.get(request_id)
-
-    #         if batch is None:
-    #             return
-
-    #         batch.status = "TRANSPORTING"
-
-    #         if batch.assigned_amr_id is not None:
-    #             self.amr_states[
-    #                 batch.shoe_type
-    #             ][batch.assigned_amr_id] = (
-    #                 AmrState.TRANSPORTING
-    #             )
-
-    #     self._update_batch_status(
-    #         request_id,
-    #         "TRANSPORTING",
-    #     )
-
-    # def _handle_transport_completed(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     request_id = str(data["request_id"])
-    #     amr_id = str(data["amr_id"])
-
-    #     with self.state_lock:
-    #         batch = self.active_batches.pop(
-    #             request_id,
-    #             None,
-    #         )
-
-    #         if batch is None:
-    #             self.get_logger().warning(
-    #                 f"Unknown completed request: {request_id}"
-    #             )
-    #             return
-
-    #         self.amr_states[
-    #             batch.shoe_type
-    #         ][amr_id] = AmrState.RETURNING
-
-    #     self._update_batch_status(
-    #         request_id,
-    #         "COMPLETED",
-    #         amr_id=amr_id,
-    #         completed_at=self._now(),
-    #     )
-
-    #     self.get_logger().info(
-    #         f"Transport completed: "
-    #         f"request_id={request_id}, "
-    #         f"amr={amr_id}"
-    #     )
-
-    # def _handle_returning(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     amr_id = str(data["amr_id"])
-    #     shoe_type = str(data["shoe_type"])
-
-    #     with self.state_lock:
-    #         if self._is_valid_amr(shoe_type, amr_id):
-    #             self.amr_states[
-    #                 shoe_type
-    #             ][amr_id] = AmrState.RETURNING
-
-    # def _handle_deadlock(
-    #     self,
-    #     data: dict[str, Any],
-    # ) -> None:
-
-    #     amr_id = str(data["amr_id"])
-    #     shoe_type = str(data["shoe_type"])
-    #     reason = str(data.get("reason", "unknown"))
-
-    #     with self.state_lock:
-    #         if self._is_valid_amr(shoe_type, amr_id):
-    #             self.amr_states[
-    #                 shoe_type
-    #             ][amr_id] = AmrState.DEADLOCK
-
-    #     self._save_event(
-    #         {
-    #             "event": "DEADLOCK",
-    #             "amr_id": amr_id,
-    #             "shoe_type": shoe_type,
-    #             "reason": reason,
-    #             "timestamp": self._now(),
-    #         }
-    #     )
-
-    #     self.get_logger().error(
-    #         f"AMR deadlock: "
-    #         f"amr={amr_id}, "
-    #         f"reason={reason}"
-    #     )
-
+ 
     # def _handle_amr_error(
     #     self,
     #     data: dict[str, Any],
@@ -720,33 +543,6 @@ class ControlNode(Node):
 
     #     self.control_status_pub.publish(msg)
 
-
-    # def _restore_batch_locked(
-    #     self,
-    #     batch: TransportBatch,
-    # ) -> None:
-    #     """
-    #     거절된 요청의 신발을 원래 순서대로 Queue 앞쪽에 복구한다.
-    #     """
-
-    #     queue = self.shoe_queues[batch.shoe_type]
-
-    #     for shoe in reversed(batch.shoes):
-    #         queue.appendleft(shoe)
-
-        
-
-    # def _is_valid_amr(
-    #     self,
-    #     shoe_type: str,
-    #     amr_id: str,
-    # ) -> bool:
-
-    #     if shoe_type not in self.amr_states:
-    #         return False
-
-    #     return amr_id in self.amr_states[shoe_type]
-
     # ======================================================
     # MongoDB
     # ======================================================
@@ -770,49 +566,101 @@ class ControlNode(Node):
                 f"Failed to save shoe: {exc}"
             )
 
+    # ======================================================
+    # service callback
+    # ======================================================
+    def start_callback(self, request, response):
 
-    # def _update_batch_status(
-    #     self,
-    #     request_id: str,
-    #     status: str,
-    #     **fields: Any,
-    # ) -> None:
+        if self.factory_state:
+            response.success = False
+            response.message = "already start task"
+            return response
+        
+        self.factory_start_pub.publish(Bool(data=True))
+        self.factory_state = True
+        response.success = True
+        response.message = "start task"
 
-    #     if self.db is None:
-    #         return
+        return response
 
-    #     try:
-    #         update_data = {
-    #             "status": status,
-    #             "updated_at": self._now(),
-    #             **fields,
-    #         }
+    def stop_callback(self, request, response):
+        if not self.factory_state:
+            response.success = False
+            response.message = "already stop task"
+            return response
+            
+        self.factory_start_pub.publish(Bool(data=False))
+        self.factory_state = False
+        response.success = True
+        response.message = "stop task"
+        return response
 
-    #         self.db.transport_batches.update_one(
-    #             {"request_id": request_id},
-    #             {"$set": update_data},
-    #         )
+    def pause_callback(self, request, response):
+    
+        if self.factory_pause:
+            response.success = False
+            response.message = "already pause task"
+            return response
+        
+        self.conveyor_stop_pub.publish(Bool(data=True))
+        self.factory_pause = True
+        response.success = True
+        response.message = "pause task"
+        return response
 
-    #     except Exception as exc:
-    #         self.get_logger().error(
-    #             f"Failed to update batch: {exc}"
-    #         )
+    def restart_callback(self, request, response):
+        if not self.factory_pause:
+            response.success = False
+            response.message = "no pause task"
+            return response
+        
+        self.conveyor_stop_pub.publish(Bool(data=False))
+        self.factory_pause = False
+        response.success = True
+        response.message = "restart task"
+        return response
 
-    # def _save_event(
-    #     self,
-    #     event: dict[str, Any],
-    # ) -> None:
+    def reset_callback(self, request, response):
+            response.success = True
+            response.message = "reset task"
+            return response
 
-    #     if self.db is None:
-    #         return
+    def worning_callback(self, request, response):
+        code = request.code
+        self.alter_pub.publish(Int32(data=code))
+        self.amr_state = False
+        return response
 
-    #     try:
-    #         self.db.system_events.insert_one(event)
+    def fms_restart_callback(self, request, response):
+        if self.amr_state:
+            response.success = False
+            response.message = "None worning"
+            return response
 
-    #     except Exception as exc:
-    #         self.get_logger().error(
-    #             f"Failed to save event: {exc}"
-    #         )
+        if not self.fms_restart_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warning("Start service is not available.")
+            response.success = False
+            response.message = "Start service is not available"
+            return response
+
+        control_request = Trigger.Request()
+        future = self.fms_restart_client.call_async(control_request)
+        future.add_done_callback(self.fms_restart_response_callback)
+
+        response.success = True
+        response.message = "restart amr"
+        return response
+        
+    def fms_restart_response_callback(self, future):
+        response = future.result()
+
+        if response.success:
+            self.get_logger().info("Restart success")
+            self.amr_state = True
+        else:
+            self.get_logger().error(response.message)
+            self.amr_state = False
+            self.alter_pub.publish(Int32(data=1))
 
     # ======================================================
     # 공통
