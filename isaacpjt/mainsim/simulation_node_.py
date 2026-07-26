@@ -43,7 +43,7 @@ TRIGGER4_PATH: Final[str] = "/World/ShoeTrigger_04"
 STOP_TRIGGER_PATH: Final[str] = "/World/StopTrigger"
 
 SHOES_ROOT_PATH: Final[str] = "/World/shoes"
-SHOEBOX_ROOT_PATH: Final[str] = "/World/shoeboxs"
+# SHOEBOX_ROOT_PATH: Final[str] = "/World/shoeboxs"
 
 
 # =====================================================================
@@ -196,6 +196,52 @@ def _set_prim_inactive(
         print(f"[simulation] 비활성화: {path}")
 
 
+def _disable_missing_dome_light(
+    stage: Usd.Stage,
+) -> None:
+    """누락된 텍스처를 참조하는 조명을 비활성화합니다."""
+
+    target_name = "color_0C0C0C.exr"
+
+    for prim in stage.TraverseAll():
+        if not prim.IsValid():
+            continue
+
+        uses_missing_texture = False
+
+        for attr in prim.GetAttributes():
+            try:
+                value = attr.Get(Usd.TimeCode.Default())
+            except Exception:
+                continue
+
+            if value is not None and target_name in str(value):
+                uses_missing_texture = True
+                break
+
+        if not uses_missing_texture:
+            continue
+
+        prim_path = str(prim.GetPath())
+
+        try:
+            prim.SetActive(False)
+
+            print(
+                "[simulation] 누락 텍스처 조명 비활성화: "
+                f"{prim_path}"
+            )
+
+        except Exception:
+            override_prim = stage.OverridePrim(prim.GetPath())
+            override_prim.SetActive(False)
+
+            print(
+                "[simulation] 누락 텍스처 조명 override 비활성화: "
+                f"{prim_path}"
+            )
+
+
 def prepare_stage() -> None:
     """World.reset() 전에 기존 충돌 그래프를 정리합니다."""
 
@@ -203,6 +249,8 @@ def prepare_stage() -> None:
 
     if stage is None:
         raise RuntimeError("열려 있는 USD Stage가 없습니다.")
+
+    _disable_missing_dome_light(stage)
 
     # 기존 ConveyorBeltGraph 전체는 유지합니다.
     # 실제 물리 노드(OnTick, read_speed, ConveyorNode)는 그대로 사용하고,
@@ -637,7 +685,6 @@ class SimulationNode:
         self._pending_trigger_shoes: list[str] = []
         self._pending_trigger4_shoes: list[str] = []
         self._pending_stop_trigger_shoes: list[str] = []
-        self._stop_trigger_handled_shoes: set[str] = set()
 
         self._physx_simulation = get_physx_simulation_interface()
         self._trigger_subscription_id = (
@@ -662,88 +709,88 @@ class SimulationNode:
     # Shoebox 초기화
     # =================================================================
 
-    def _initialize_shoeboxes(self) -> None:
-        """shoeboxs 아래 상자를 찾아 이름순으로 등록합니다."""
+    # def _initialize_shoeboxes(self) -> None:
+    #     """shoeboxs 아래 상자를 찾아 이름순으로 등록합니다."""
 
-        shoebox_root = self._stage.GetPrimAtPath(
-            SHOEBOX_ROOT_PATH
-        )
+    #     shoebox_root = self._stage.GetPrimAtPath(
+    #         SHOEBOX_ROOT_PATH
+    #     )
 
-        if not shoebox_root.IsValid():
-            raise RuntimeError(
-                "Shoebox 루트를 찾을 수 없습니다: "
-                f"{SHOEBOX_ROOT_PATH}"
-            )
+    #     if not shoebox_root.IsValid():
+    #         raise RuntimeError(
+    #             "Shoebox 루트를 찾을 수 없습니다: "
+    #             f"{SHOEBOX_ROOT_PATH}"
+    #         )
 
-        discovered_paths: set[str] = set()
+    #     discovered_paths: set[str] = set()
 
-        # 현재 활성 상태로 조회되는 자식 Prim도 확인합니다.
-        for child in shoebox_root.GetAllChildren():
-            if not child.IsValid():
-                continue
+    #     # 현재 활성 상태로 조회되는 자식 Prim도 확인합니다.
+    #     for child in shoebox_root.GetAllChildren():
+    #         if not child.IsValid():
+    #             continue
 
-            child_name = child.GetName()
+    #         child_name = child.GetName()
 
-            if "shoebox" not in child_name.lower():
-                continue
+    #         if "shoebox" not in child_name.lower():
+    #             continue
 
-            discovered_paths.add(
-                str(child.GetPath())
-            )
+    #         discovered_paths.add(
+    #             str(child.GetPath())
+    #         )
 
-        # active=false 상태라 일반 Traversal에서 빠지는 Prim도 Layer에서 찾습니다.
-        layer_paths = _find_inactive_child_paths_from_layers(
-            self._stage,
-            SHOEBOX_ROOT_PATH,
-            "shoebox",
-        )
+    #     # active=false 상태라 일반 Traversal에서 빠지는 Prim도 Layer에서 찾습니다.
+    #     layer_paths = _find_inactive_child_paths_from_layers(
+    #         self._stage,
+    #         SHOEBOX_ROOT_PATH,
+    #         "shoebox",
+    #     )
 
-        discovered_paths.update(layer_paths)
+    #     discovered_paths.update(layer_paths)
 
-        self._shoebox_paths = sorted(
-            discovered_paths,
-            key=lambda path: _natural_sort_key(
-                path.rsplit("/", 1)[-1]
-            ),
-        )
+    #     self._shoebox_paths = sorted(
+    #         discovered_paths,
+    #         key=lambda path: _natural_sort_key(
+    #             path.rsplit("/", 1)[-1]
+    #         ),
+    #     )
 
-        self._next_shoebox_index = 0
+    #     self._next_shoebox_index = 0
 
-        if not self._shoebox_paths:
-            raise RuntimeError(
-                "Shoebox를 한 개도 찾지 못했습니다. "
-                f"{SHOEBOX_ROOT_PATH} 아래에 "
-                "shoebox, shoebox_01 등의 Prim이 있는지 확인하세요."
-            )
+    #     if not self._shoebox_paths:
+    #         raise RuntimeError(
+    #             "Shoebox를 한 개도 찾지 못했습니다. "
+    #             f"{SHOEBOX_ROOT_PATH} 아래에 "
+    #             "shoebox, shoebox_01 등의 Prim이 있는지 확인하세요."
+    #         )
 
-        # 시작 시 모든 Shoebox를 비활성화합니다.
-        for shoebox_path in self._shoebox_paths:
-            shoebox_prim = self._stage.GetPrimAtPath(
-                shoebox_path
-            )
+    #     # 시작 시 모든 Shoebox를 비활성화합니다.
+    #     for shoebox_path in self._shoebox_paths:
+    #         shoebox_prim = self._stage.GetPrimAtPath(
+    #             shoebox_path
+    #         )
 
-            if shoebox_prim.IsValid():
-                shoebox_prim.SetActive(False)
-            else:
-                override_prim = self._stage.OverridePrim(
-                    shoebox_path
-                )
+    #         if shoebox_prim.IsValid():
+    #             shoebox_prim.SetActive(False)
+    #         else:
+    #             override_prim = self._stage.OverridePrim(
+    #                 shoebox_path
+    #             )
 
-                override_prim.SetActive(False)
+    #             override_prim.SetActive(False)
 
-        print(
-            "[simulation] Shoebox 등록 개수: "
-            f"{len(self._shoebox_paths)}"
-        )
+    #     print(
+    #         "[simulation] Shoebox 등록 개수: "
+    #         f"{len(self._shoebox_paths)}"
+    #     )
 
-        for index, shoebox_path in enumerate(
-            self._shoebox_paths,
-            start=1,
-        ):
-            print(
-                f"[simulation] Shoebox {index}: "
-                f"{shoebox_path}"
-            )
+    #     for index, shoebox_path in enumerate(
+    #         self._shoebox_paths,
+    #         start=1,
+    #     ):
+    #         print(
+    #             f"[simulation] Shoebox {index}: "
+    #             f"{shoebox_path}"
+    #         )
 
     # =================================================================
     # PhysX Trigger 처리
@@ -868,8 +915,7 @@ class SimulationNode:
                 )
 
         elif is_stop_trigger:
-            if shoe_path not in self._stop_trigger_handled_shoes:
-                self._stop_trigger_handled_shoes.add(shoe_path)
+            if shoe_path not in self._pending_stop_trigger_shoes:
                 self._pending_stop_trigger_shoes.append(
                     shoe_path
                 )
@@ -913,10 +959,6 @@ class SimulationNode:
             return
 
         selected_path = random.choice(candidates)
-
-        # 다시 투입되는 신발에 대해서만 StopTrigger 감지를 재허용합니다.
-        self._stop_trigger_handled_shoes.discard(selected_path)
-
         shoe_prim = self._get_shoe(selected_path)
 
         if shoe_prim.IsValid():
@@ -1316,7 +1358,6 @@ class SimulationNode:
         self._pending_trigger_shoes.clear()
         self._pending_trigger4_shoes.clear()
         self._pending_stop_trigger_shoes.clear()
-        self._stop_trigger_handled_shoes.clear()
         self._stop_trigger_sequences.clear()
 
         if self._trigger_subscription_id is not None:
