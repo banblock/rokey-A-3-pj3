@@ -307,8 +307,6 @@ class ControlNodeTest(Node):
 
             self.get_logger().info(
                 f"[RESP] {service_name} "
-                f"success={response.success}, "
-                f"message='{response.message}'"
             )
 
         except Exception as exc:

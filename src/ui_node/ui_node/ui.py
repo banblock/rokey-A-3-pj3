@@ -337,11 +337,9 @@ class DashboardWindow(QMainWindow):
         self.shoe_value_labels: dict[str, QLabel] = {}
 
         fields = [
-            ("id", "ID"),
-            ("reuse", "Reuse"),
-            ("type", "Type"),
-            ("confidence", "Confidence"),
-            ("processed_at", "Processed At"),
+            ("discard", "Result"),
+            ("color", "Color"),
+            ("size", "Size"),
         ]
 
         for row_index, (key, name) in enumerate(fields):
@@ -475,8 +473,16 @@ class DashboardWindow(QMainWindow):
         self.ros_signals.vision_image.connect(
             self.vision_image_view.set_cv_image
         )
-        self.ros_signals.model_result_image.connect(
-            self._update_result_images
+        self.ros_signals.model_result_image1.connect(
+            self.model_result_views[0].set_cv_image
+        )
+
+        self.ros_signals.model_result_image2.connect(
+            self.model_result_views[1].set_cv_image
+        )
+
+        self.ros_signals.model_result_image3.connect(
+            self.model_result_views[2].set_cv_image
         )
         # self.ros_signals.system_status.connect(
         #     self._update_system_status
@@ -545,58 +551,34 @@ class DashboardWindow(QMainWindow):
                 "warning",
             )
 
-    def _update_result_images(self, data: Any) -> None:
-        if isinstance(data, (list, tuple)):
-            frames = list(data[:3])
-        else:
-            frames = [data]
+    # def _update_result_images(self, data: Any) -> None:
+    #     if isinstance(data, (list, tuple)):
+    #         frames = list(data[:3])
+    #     else:
+    #         frames = [data]
 
-        for index, frame in enumerate(frames):
-            if index >= len(self.model_result_views):
-                break
-            self.model_result_views[index].set_cv_image(frame)
+    #     for index, frame in enumerate(frames):
+    #         if index >= len(self.model_result_views):
+    #             break
+    #         self.model_result_views[index].set_cv_image(frame)
 
     def _update_shoe_result(
         self,
         data: dict[str, Any],
     ) -> None:
-        reuse_value = data.get("reuse", "-")
+        discard = data.get("discard")
 
-        if isinstance(reuse_value, bool):
-            reuse_text = (
-                "PASS"
-                if reuse_value
-                else "REJECT"
-            )
+        if discard is True:
+            result_text = "DISCARD"
+        elif discard is False:
+            result_text = "REUSE"
         else:
-            reuse_text = str(reuse_value)
-
-        confidence = data.get(
-            "confidence",
-            "-",
-        )
-
-        if isinstance(confidence, (int, float)):
-            if confidence <= 1.0:
-                confidence_text = (
-                    f"{confidence * 100:.1f}%"
-                )
-            else:
-                confidence_text = (
-                    f"{confidence:.1f}%"
-                )
-        else:
-            confidence_text = str(confidence)
+            result_text = "-"
 
         values = {
-            "id": data.get("id", "-"),
-            "reuse": reuse_text,
-            "type": data.get("type", "-"),
-            "confidence": confidence_text,
-            "processed_at": data.get(
-                "processed_at",
-                "-",
-            ),
+            "discard": result_text,
+            "color": data.get("color", "-"),
+            "size": data.get("size", "-"),
         }
 
         for key, value in values.items():

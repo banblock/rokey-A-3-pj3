@@ -11,7 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, Int32
 from std_srvs.srv import Trigger
-
+from recycle_interfaces.msg import ShoeInspectionResult
 
 # ============================================================
 # ROS2 topic / service names
@@ -57,7 +57,9 @@ class RosSignals(QObject):
     """
 
     vision_image = pyqtSignal(object)
-    model_result_image = pyqtSignal(object)
+    model_result_image1 = pyqtSignal(object)
+    model_result_image2 = pyqtSignal(object)
+    model_result_image3 = pyqtSignal(object)
 
     system_status = pyqtSignal(dict)
     shoe_result = pyqtSignal(dict)
@@ -114,7 +116,23 @@ class DashboardRosNode(Node):
         self.create_subscription(
             Image,
             MODEL_RESULT_IMAGE_TOPIC,
-            self._model_result_image_callback,
+            self._model_result_image1_callback,
+            10,
+            callback_group=self.callback_group,
+        )
+
+        self.create_subscription(
+            Image,
+            MODEL_RESULT_IMAGE_TOPIC2,
+            self._model_result_image2_callback,
+            10,
+            callback_group=self.callback_group,
+        )
+
+        self.create_subscription(
+            Image,
+            MODEL_RESULT_IMAGE_TOPIC3,
+            self._model_result_image3_callback,
             10,
             callback_group=self.callback_group,
         )
@@ -136,7 +154,7 @@ class DashboardRosNode(Node):
         )
 
         self.create_subscription(
-            String,
+            ShoeInspectionResult,
             AMR_STATUS_TOPIC,
             self._amr_status_callback,
             10,
@@ -155,6 +173,14 @@ class DashboardRosNode(Node):
             Int32,
             ALERT_TOPIC,
             self._alert_callback,
+            10,
+            callback_group=self.callback_group,
+        )
+
+        self.create_subscription(
+            String,
+            INVENTORY_TOPIC,
+            self._inventory_callback,
             10,
             callback_group=self.callback_group,
         )
@@ -206,12 +232,37 @@ class DashboardRosNode(Node):
         )
         self.signals.vision_image.emit(frame)
 
-    def _model_result_image_callback(self, msg: Image) -> None:
+    def _model_result_image1_callback(
+        self,
+        msg: Image,
+    ) -> None:
         frame = self.bridge.imgmsg_to_cv2(
             msg,
             desired_encoding="bgr8",
         )
-        self.signals.model_result_image.emit(frame)
+        self.signals.model_result_image1.emit(frame)
+
+
+    def _model_result_image2_callback(
+        self,
+        msg: Image,
+    ) -> None:
+        frame = self.bridge.imgmsg_to_cv2(
+            msg,
+            desired_encoding="bgr8",
+        )
+        self.signals.model_result_image2.emit(frame)
+
+
+    def _model_result_image3_callback(
+        self,
+        msg: Image,
+    ) -> None:
+        frame = self.bridge.imgmsg_to_cv2(
+            msg,
+            desired_encoding="bgr8",
+        )
+        self.signals.model_result_image3.emit(frame)
 
     # ========================================================
     # JSON callbacks
@@ -223,11 +274,17 @@ class DashboardRosNode(Node):
     #     if data is not None:
     #         self.signals.system_status.emit(data)
 
-    def _shoe_result_callback(self, msg: String) -> None:
-        data = self._parse_json(msg.data, SHOE_RESULT_TOPIC)
+    def _shoe_result_callback(
+        self,
+        msg: ShoeInspectionResult,
+    ) -> None:
+        data = {
+            "discard": bool(msg.discard),
+            "color": int(msg.color),
+            "size": int(msg.size),
+        }
 
-        if data is not None:
-            self.signals.shoe_result.emit(data)
+        self.signals.shoe_result.emit(data)
 
     def _amr_status_callback(self, msg: String) -> None:
         data = self._parse_json(msg.data, AMR_STATUS_TOPIC)
@@ -245,13 +302,13 @@ class DashboardRosNode(Node):
                 data.get("amrs", [])
             )
 
-    # def _inventory_callback(self, msg: String) -> None:
-    #     data = self._parse_json(msg.data, INVENTORY_TOPIC)
+    def _inventory_callback(self, msg: String) -> None:
+        data = self._parse_json(msg.data, INVENTORY_TOPIC)
 
-    #     if data is not None:
-    #         self.signals.inventory.emit(
-    #             data.get("items", [])
-    #         )
+        if data is not None:
+            self.signals.inventory.emit(
+                data.get("items", [])
+            )
 
     def _alert_callback(self, msg: Int32) -> None:
         self.signals.alert.emit(msg.data)
