@@ -24,7 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'control = recycle_controller.control_node:main'
+            'control = recycle_controller.control_node:main',
+            'test = recycle_controller.control_node_test:main'
         ],
     },
 )

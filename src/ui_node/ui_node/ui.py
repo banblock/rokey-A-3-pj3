@@ -1,4 +1,3 @@
-
 import sys
 from datetime import datetime
 from typing import Any
@@ -6,7 +5,7 @@ from typing import Any
 import cv2
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -121,138 +120,6 @@ class ImageView(QLabel):
         self._refresh_pixmap()
 
 
-class AMRPointGraph(QFrame):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setObjectName("AMRGraph")
-        self.setMinimumHeight(190)
-
-        self.route_points = [
-            (0.08, 0.55),
-            (0.23, 0.30),
-            (0.42, 0.55),
-            (0.60, 0.32),
-            (0.78, 0.58),
-            (0.92, 0.36),
-        ]
-
-        self.amr_points: list[dict[str, Any]] = []
-
-    def set_amr_points(
-        self,
-        amrs: list[dict[str, Any]],
-    ) -> None:
-        self.amr_points = amrs
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-
-        painter = QPainter(self)
-        painter.setRenderHint(
-            QPainter.RenderHint.Antialiasing
-        )
-
-        rect = self.rect().adjusted(28, 36, -28, -28)
-
-        painter.setPen(QPen(QColor("#243044"), 1))
-
-        for index in range(7):
-            x = rect.left() + rect.width() * index / 6
-            painter.drawLine(
-                int(x),
-                rect.top(),
-                int(x),
-                rect.bottom(),
-            )
-
-        for index in range(5):
-            y = rect.top() + rect.height() * index / 4
-            painter.drawLine(
-                rect.left(),
-                int(y),
-                rect.right(),
-                int(y),
-            )
-
-        pixel_points: list[tuple[int, int]] = []
-
-        for point_x, point_y in self.route_points:
-            x = int(rect.left() + rect.width() * point_x)
-            y = int(rect.top() + rect.height() * point_y)
-            pixel_points.append((x, y))
-
-        painter.setPen(QPen(QColor("#64748B"), 3))
-
-        for start, end in zip(
-            pixel_points,
-            pixel_points[1:],
-        ):
-            painter.drawLine(
-                start[0],
-                start[1],
-                end[0],
-                end[1],
-            )
-
-        for index, (x, y) in enumerate(
-            pixel_points,
-            start=1,
-        ):
-            painter.setBrush(QColor("#111827"))
-            painter.setPen(QPen(QColor("#94A3B8"), 2))
-            painter.drawEllipse(x - 8, y - 8, 16, 16)
-
-            painter.setPen(QColor("#CBD5E1"))
-            painter.drawText(
-                x - 10,
-                y - 17,
-                f"P{index}",
-            )
-
-        colors = [
-            QColor("#22C55E"),
-            QColor("#38BDF8"),
-            QColor("#F59E0B"),
-            QColor("#A78BFA"),
-            QColor("#F43F5E"),
-            QColor("#14B8A6"),
-            QColor("#FB7185"),
-            QColor("#84CC16"),
-        ]
-
-        for index, amr in enumerate(self.amr_points):
-            point_number = int(amr.get("point", 1))
-            point_number = max(
-                1,
-                min(point_number, len(pixel_points)),
-            )
-
-            x, y = pixel_points[point_number - 1]
-            color = colors[index % len(colors)]
-            name = str(
-                amr.get(
-                    "id",
-                    f"AMR-{index + 1:02d}",
-                )
-            )
-
-            painter.setBrush(color)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(
-                x - 7,
-                y - 7,
-                14,
-                14,
-            )
-
-            painter.setPen(color)
-            painter.drawText(
-                x + 11,
-                y + 5,
-                name,
-            )
-
 
 class DashboardWindow(QMainWindow):
     def __init__(self) -> None:
@@ -267,7 +134,7 @@ class DashboardWindow(QMainWindow):
         self.setWindowTitle(
             "Shoe Return Automation HMI"
         )
-        self.resize(1500, 820)
+        self.resize(1500, 720)
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -293,25 +160,22 @@ class DashboardWindow(QMainWindow):
             self._create_vision_card(),
             0,
             0,
-        )
-        content.addWidget(
-            self._create_amr_graph_card(),
-            0,
             1,
+            2,
         )
         content.addWidget(
-            self._create_system_status_card(),
+            self._create_result_images_card(),
             0,
             2,
         )
 
         content.addWidget(
-            self._create_processed_shoe_card(),
+            self._create_system_status_card(),
             1,
             0,
         )
         content.addWidget(
-            self._create_amr_status_card(),
+            self._create_processed_shoe_card(),
             1,
             1,
         )
@@ -334,13 +198,13 @@ class DashboardWindow(QMainWindow):
             2,
         )
 
-        content.setColumnStretch(0, 3)
-        content.setColumnStretch(1, 3)
-        content.setColumnStretch(2, 2)
+        content.setColumnStretch(0, 4)
+        content.setColumnStretch(1, 4)
+        content.setColumnStretch(2, 3)
 
-        content.setRowStretch(0, 3)
-        content.setRowStretch(1, 2)
-        content.setRowStretch(2, 3)
+        content.setRowStretch(0, 5)
+        content.setRowStretch(1, 1)
+        content.setRowStretch(2, 2)
 
         main_layout.addLayout(content)
 
@@ -364,7 +228,7 @@ class DashboardWindow(QMainWindow):
         title.setObjectName("AppTitle")
 
         subtitle = QLabel(
-            "Vision · Simulation · FMS · AMR"
+            "Vision · Simulation · FMS"
         )
         subtitle.setObjectName("AppSubtitle")
 
@@ -393,18 +257,10 @@ class DashboardWindow(QMainWindow):
 
         self.vision_image_view = ImageView(
             "VISION CAMERA",
-            minimum_height=190,
+            minimum_height=420,
         )
 
         card.body.addWidget(self.vision_image_view)
-        return card
-
-    def _create_amr_graph_card(self) -> SectionCard:
-        card = SectionCard("AMR Point Graph")
-
-        self.amr_graph = AMRPointGraph()
-        card.body.addWidget(self.amr_graph)
-
         return card
 
     def _create_system_status_card(
@@ -447,37 +303,38 @@ class DashboardWindow(QMainWindow):
         card.body.addStretch()
         return card
 
+    def _create_result_images_card(self) -> SectionCard:
+        card = SectionCard("Vision Result Images")
+
+        result_layout = QVBoxLayout()
+        result_layout.setSpacing(8)
+
+        self.model_result_views = [
+            ImageView("RESULT IMAGE 1", minimum_height=130),
+            ImageView("RESULT IMAGE 2", minimum_height=130),
+            ImageView("RESULT IMAGE 3", minimum_height=130),
+        ]
+
+        for view in self.model_result_views:
+            result_layout.addWidget(view, 1)
+
+        card.body.addLayout(result_layout)
+        return card
+
     def _create_processed_shoe_card(
         self,
     ) -> SectionCard:
-        card = SectionCard(
-            "Processed Shoe / Model Result"
-        )
-
-        content = QHBoxLayout()
-        content.setSpacing(12)
-
-        self.model_result_view = ImageView(
-            "MODEL RESULT",
-            minimum_height=160,
-        )
+        card = SectionCard("Processed Shoe")
 
         info = QFrame()
         info.setObjectName("InnerPanel")
 
-        info_layout = QVBoxLayout(info)
-        info_layout.setContentsMargins(
-            12,
-            12,
-            12,
-            12,
-        )
-        info_layout.setSpacing(9)
+        info_layout = QGridLayout(info)
+        info_layout.setContentsMargins(10, 8, 10, 8)
+        info_layout.setHorizontalSpacing(12)
+        info_layout.setVerticalSpacing(6)
 
-        self.shoe_value_labels: dict[
-            str,
-            QLabel,
-        ] = {}
+        self.shoe_value_labels: dict[str, QLabel] = {}
 
         fields = [
             ("id", "ID"),
@@ -487,46 +344,21 @@ class DashboardWindow(QMainWindow):
             ("processed_at", "Processed At"),
         ]
 
-        for key, name in fields:
-            row = QHBoxLayout()
-
+        for row_index, (key, name) in enumerate(fields):
             left = QLabel(name)
             left.setObjectName("RowLabel")
 
             right = QLabel("-")
             right.setObjectName("RowValue")
+            right.setAlignment(Qt.AlignmentFlag.AlignRight)
 
             self.shoe_value_labels[key] = right
 
-            row.addWidget(left)
-            row.addStretch()
-            row.addWidget(right)
+            info_layout.addWidget(left, row_index, 0)
+            info_layout.addWidget(right, row_index, 1)
 
-            info_layout.addLayout(row)
-
-        info_layout.addStretch()
-
-        content.addWidget(
-            self.model_result_view,
-            3,
-        )
-        content.addWidget(info, 2)
-
-        card.body.addLayout(content)
-        return card
-
-    def _create_amr_status_card(self) -> SectionCard:
-        card = SectionCard("AMR Status")
-
-        self.amr_status_layout = card.body
-
-        empty_label = QLabel(
-            "AMR status data not received"
-        )
-        empty_label.setObjectName("MutedText")
-
-        self.amr_status_layout.addWidget(empty_label)
-
+        info_layout.setColumnStretch(1, 1)
+        card.body.addWidget(info)
         return card
 
     def _create_alert_card(self) -> SectionCard:
@@ -644,19 +476,13 @@ class DashboardWindow(QMainWindow):
             self.vision_image_view.set_cv_image
         )
         self.ros_signals.model_result_image.connect(
-            self.model_result_view.set_cv_image
+            self._update_result_images
         )
         # self.ros_signals.system_status.connect(
         #     self._update_system_status
         # )
         self.ros_signals.shoe_result.connect(
             self._update_shoe_result
-        )
-        self.ros_signals.amr_status.connect(
-            self._update_amr_status
-        )
-        self.ros_signals.amr_points.connect(
-            self.amr_graph.set_amr_points
         )
         self.ros_signals.inventory.connect(
             self._update_inventory
@@ -719,6 +545,17 @@ class DashboardWindow(QMainWindow):
                 "warning",
             )
 
+    def _update_result_images(self, data: Any) -> None:
+        if isinstance(data, (list, tuple)):
+            frames = list(data[:3])
+        else:
+            frames = [data]
+
+        for index, frame in enumerate(frames):
+            if index >= len(self.model_result_views):
+                break
+            self.model_result_views[index].set_cv_image(frame)
+
     def _update_shoe_result(
         self,
         data: dict[str, Any],
@@ -766,67 +603,6 @@ class DashboardWindow(QMainWindow):
             self.shoe_value_labels[key].setText(
                 str(value)
             )
-
-    def _update_amr_status(
-        self,
-        amrs: list[dict[str, Any]],
-    ) -> None:
-        self._clear_layout(self.amr_status_layout)
-
-        if not amrs:
-            empty_label = QLabel("No AMR status")
-            empty_label.setObjectName("MutedText")
-            self.amr_status_layout.addWidget(
-                empty_label
-            )
-            return
-
-        for amr in amrs:
-            frame = QFrame()
-            frame.setObjectName("AMRRow")
-
-            row = QGridLayout(frame)
-            row.setContentsMargins(
-                10,
-                8,
-                10,
-                8,
-            )
-            row.setHorizontalSpacing(8)
-
-            amr_id = str(amr.get("id", "-"))
-            state = str(
-                amr.get("state", "Idle")
-            )
-            point = str(amr.get("point", "-"))
-            target = str(
-                amr.get("target", "-")
-            )
-
-            name_label = QLabel(amr_id)
-            name_label.setObjectName("RowValue")
-
-            badge = StatusBadge(
-                state,
-                self._map_amr_state_style(state),
-            )
-            badge.setFixedWidth(78)
-
-            point_label = QLabel(point)
-            point_label.setObjectName("MutedText")
-
-            target_label = QLabel(target)
-            target_label.setObjectName("MutedText")
-
-            row.addWidget(name_label, 0, 0)
-            row.addWidget(badge, 0, 1)
-            row.addWidget(point_label, 0, 2)
-            row.addWidget(target_label, 0, 3)
-            row.setColumnStretch(2, 2)
-
-            self.amr_status_layout.addWidget(frame)
-
-        self.amr_status_layout.addStretch()
 
     def _update_inventory(
         self,
@@ -992,26 +768,6 @@ class DashboardWindow(QMainWindow):
         return "offline"
 
     @staticmethod
-    def _map_amr_state_style(
-        state: str,
-    ) -> str:
-        normalized = state.strip().lower()
-
-        if normalized == "moving":
-            return "ok"
-
-        if normalized == "loading":
-            return "warning"
-
-        if normalized in {
-            "idle",
-            "returning",
-        }:
-            return "info"
-
-        return "offline"
-
-    @staticmethod
     def _map_alert_style(level: str) -> str:
         normalized = level.strip().lower()
 
@@ -1105,8 +861,7 @@ class DashboardWindow(QMainWindow):
                 color: #F8FAFC;
             }
 
-            #ImageView,
-            #AMRGraph {
+            #ImageView {
                 background: #090E18;
                 border: 1px solid #243244;
                 border-radius: 10px;
@@ -1118,8 +873,7 @@ class DashboardWindow(QMainWindow):
                 font-weight: 700;
             }
 
-            #InnerPanel,
-            #AMRRow {
+            #InnerPanel {
                 background: #0F172A;
                 border: 1px solid #243244;
                 border-radius: 9px;
@@ -1260,4 +1014,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    main()  
