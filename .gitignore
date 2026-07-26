@@ -17,3 +17,4 @@ __pycache__/
 *.npy
 *.json
 *.txt
+vision_node*

@@ -33,7 +33,7 @@ from std_msgs.msg import String, Bool, Int32
 from recycle_interfaces.msg import PickupList
 from recycle_interfaces.srv import AmrState
 
-from fleet_config import (
+from fleet_config_test1 import (
     NODE_GRAPH,
     PICKUP_NODE,
     PICKUP_WAIT_SLOTS,
@@ -82,7 +82,7 @@ MAX_SHOES_PER_TRIP = 5  # 로봇 1대가 한 번 나갈 때 실을 수 있는 �
 # 잦았다. MAX_SHOES_PER_TRIP과 값이 같아야 "항상 꽉 채운 트립만 나간다"가
 # 되고, 더 작게 두면(예: 3) "3개 이상만 모이면 출발, 최대 5개까지만 싣는다"처럼
 # 최소/최대를 따로 조절할 수 있다.
-MIN_SHOES_TO_DISPATCH = 1
+MIN_SHOES_TO_DISPATCH = 5
 # 배치 안에서 여러 사이즈가 섞여 있으면 반드시 280→260→240 순서로 방문해야 한다
 # — 랙 진입 통로가 일방통행이라 작은 사이즈부터 들르면 큰 사이즈로 되돌아갈 수 없다.
 _SIZE_VISIT_ORDER = {"280": 0, "260": 1, "240": 2}

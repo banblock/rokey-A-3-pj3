@@ -144,7 +144,7 @@ class FleetDriver(Node):
 
     def __init__(self):
         super().__init__("fleet_driver")
-        self.declare_parameter("config_module", "fleet_config")
+        self.declare_parameter("config_module", "fleet_config_test1")
         config_module_name = self.get_parameter("config_module").get_parameter_value().string_value
         config = importlib.import_module(config_module_name)
         self.NODE_GRAPH = config.NODE_GRAPH
