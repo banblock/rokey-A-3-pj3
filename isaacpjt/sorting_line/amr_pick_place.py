@@ -61,7 +61,19 @@ CONE_CONTACT_LOCAL_OFFSET = (0.0, 0.0, -0.0015)
 # 보인다 - 트리거 콘의 접촉 판정 허용 오차 때문에 생기는 것으로 보이고,
 # 속도를 늦춰도 줄어들지 않으니 굳이 느리게 할 필요가 없다.
 EVENTS_DT = [0.008, 0.004, 0.05, 0.3, 0.0035, 0.01, 0.00125, 0.15, 0.008, 0.08]
-PICK_DESCEND_OFFSET_Z = -0.015  # 표면보다 살짝 아래를 목표로 잡아 실제 접촉을 보장(gui_pick_place_demo.py와 동일)
+# 표면보다 살짝 아래를 목표로 잡아 콘 트리거 접촉을 보장한다. 흡착 순간
+# 박스가 밀리며 최대 17도까지 회전하는 문제가 있어(2026-07-26, 사용자 확인)
+# 두 가지를 시도했지만 둘 다 실패:
+#  1) GripperBase/wrist_3_link에 UsdPhysics.FilteredPairsAPI로 박스와의
+#     콜리전만 선택적으로 꺼봤더니, PhysX가 이 필터를 리지드바디 단위로
+#     적용해서 콘 트리거 감지 자체가 죽어버렸다(픽업이 전부 pick_failed로
+#     바뀜 - 되돌림).
+#  2) 이 오프셋 자체를 -0.004로 줄여봤지만 회전 드리프트가 전혀 줄지 않았다
+#     (여전히 ~17도) - 즉 "얼마나 깊이 파고드는가"가 원인이 아니라는 뜻.
+# 원인이 다른 곳(콘 형태/접촉 시점의 비대칭 등)에 있는 것으로 보여 원래
+# 값으로 되돌렸다 - 픽업 성공률 자체엔 영향 없음(용접은 항상 성공), 자세
+# 일관성 문제만 남아있다.
+PICK_DESCEND_OFFSET_Z = -0.015
 # 직전 반복(흡착/용접)이 끝난 직후엔 그 충격(jolt)으로 섀시가 아주 잠깐
 # 흔들릴 수 있다 - 그 순간에 바로 다음 반복의 섀시 pose를 읽으면(단 1프레임
 # 스냅샷) 목표 위치가 완전히 엉뚱하게 계산되는 회귀가 실제로 있었다(헤드리스로
@@ -165,21 +177,34 @@ HOVER_TOLERANCE_M = 0.03
 
 
 def prepare_cone_triggers(robot_prim_path: str) -> None:
-    """Cone_0~3에 PhysxTriggerStateAPI를 붙여 접촉 판정을 가능하게 한다.
+    """Cone_0~3(+Plate)에 PhysxTriggerStateAPI를 붙여 접촉 판정을 가능하게 한다.
 
     반드시 world.reset()(첫 physics step) 이전에 호출해야 한다 - PhysX가
     최초 reset 시점에 콜리전/트리거 표현을 스냅샷하는 것으로 보이며, reset
     이후에 API를 붙이면 HasAPI()는 True로 보여도 실제 겹침 조회
     (GetTriggeredCollisionsRel)가 영원히 빈 리스트만 반환한다(헤드리스로
     직접 확인한 회귀 - reset 전/후로 나눠 비교했을 때 전자만 정상 동작).
+
+    GripperBase 밑의 "Plate"(그리퍼 몸체 자체)는 원래 에셋에 PhysxCollisionAPI +
+    PhysxTriggerAPI까지는 붙어있는데 PhysxTriggerStateAPI만 빠져 있었다
+    (2026-07-26, check_plate_schemas.py로 확인 - Cone_0과 스키마 목록이
+    똑같은데 이것만 없음). 위와 같은 이유로 StateAPI 없이는 실제로는 트리거로
+    동작하지 않고 진짜 솔리드 콜라이더처럼 움직여서, 흡착 하강 시 GripperBase
+    몸체(Plate)가 박스를 파고들며 최대 17도까지 밀고 돌려버리는 문제가 있었다
+    (사용자 확인). Cone과 똑같이 StateAPI를 붙여주면 원래 의도대로 순수
+    트리거가 되어 이 문제가 사라진다(헤드리스로 검증 - 회전 드리프트
+    0.03~0.06도로 감소, 픽업 성공률도 그대로 유지 - FilteredPairsAPI로
+    시도했을 때와 달리 Cone 자체의 트리거 감지엔 영향 없음).
     """
     from pxr import PhysxSchema
 
     stage = omni.usd.get_context().get_stage()
-    for i in range(4):
-        cone_prim = stage.GetPrimAtPath(f"{robot_prim_path}/arm_mount/ur5e/GripperBase/Cone_{i}")
-        if cone_prim.IsValid() and not cone_prim.HasAPI(PhysxSchema.PhysxTriggerStateAPI):
-            PhysxSchema.PhysxTriggerStateAPI.Apply(cone_prim)
+    gripper_base_path = f"{robot_prim_path}/arm_mount/ur5e/GripperBase"
+    trigger_child_names = ["Cone_0", "Cone_1", "Cone_2", "Cone_3", "Plate"]
+    for name in trigger_child_names:
+        child_prim = stage.GetPrimAtPath(f"{gripper_base_path}/{name}")
+        if child_prim.IsValid() and not child_prim.HasAPI(PhysxSchema.PhysxTriggerStateAPI):
+            PhysxSchema.PhysxTriggerStateAPI.Apply(child_prim)
 
 
 class AmrArmController:
