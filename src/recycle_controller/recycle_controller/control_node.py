@@ -2,11 +2,7 @@
 
 import json
 import threading
-import uuid
-from collections import deque
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any
 from .db_manager import MongoDBManager
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -18,13 +14,6 @@ from recycle_interfaces.msg import PickupList, ShoeInspectionResult
 from recycle_interfaces.srv import AmrState
 
 
-# SHOE_TYPES = (
-#     "shoe_type_1",
-#     "shoe_type_2",
-#     "shoe_type_3",
-#     "shoe_type_4",
-# )
-
 BATCH_SIZE = 5
 
 START_SERVICE = "/control/start"
@@ -32,9 +21,6 @@ PAUSE_SERVICE = "/control/pause"
 RESTART_SERVICE = "/control/restart"
 STOP_SERVICE = "/control/stop"
 RESET_SERVICE = "/control/reset"
-
-
-
 
 class ControlNode(Node):
 
@@ -460,41 +446,51 @@ class ControlNode(Node):
             return response
 
     def worning_callback(self, request, response):
+        
         code = request.code
         self.alter_pub.publish(Int32(data=code))
+
+        if self.factory_pause:
+            return response
+        
+        self.conveyor_stop_pub.publish(Bool(data=True))
+        self.factory_pause = True
         self.amr_state = False
+
         return response
 
     def fms_restart_callback(self, request, response):
         if self.amr_state:
-            response.success = False
-            response.message = "None worning"
             return response
 
-        if not self.fms_restart_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warning("Start service is not available.")
-            response.success = False
-            response.message = "Start service is not available"
+        # if not self.fms_restart_client.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().warning("Start service is not available.")
+        #     response.success = False
+        #     response.message = "Start service is not available"
+        #     return response
+
+        # control_request = Trigger.Request()
+        # future = self.fms_restart_client.call_async(control_request)
+        # future.add_done_callback(self.fms_restart_response_callback)
+
+        if not self.factory_pause:
             return response
-
-        control_request = Trigger.Request()
-        future = self.fms_restart_client.call_async(control_request)
-        future.add_done_callback(self.fms_restart_response_callback)
-
-        response.success = True
-        response.message = "restart amr"
+        
+        self.conveyor_stop_pub.publish(Bool(data=False))
+        self.factory_pause = False
+        self.amr_state = True
         return response
         
-    def fms_restart_response_callback(self, future):
-        response = future.result()
+    # def fms_restart_response_callback(self, future):
+    #     response = future.result()
 
-        if response.success:
-            self.get_logger().info("Restart success")
-            self.amr_state = True
-        else:
-            self.get_logger().error(response.message)
-            self.amr_state = False
-            self.alter_pub.publish(Int32(data=1))
+    #     if response.success:
+    #         self.get_logger().info("Restart success")
+    #         self.amr_state = True
+    #     else:
+    #         self.get_logger().error(response.message)
+    #         self.amr_state = False
+    #         self.alter_pub.publish(Int32(data=1))
 
     # ======================================================
     # 공통
