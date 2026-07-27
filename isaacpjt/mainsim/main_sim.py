@@ -54,6 +54,15 @@ from simulation_node import (
     create_simulation_node,
     prepare_stage,
 )
+from amr_pick_place import AmrArmController, prepare_cone_triggers
+
+# amr_1의 로봇팔 pick&place 자동화만 우선 구현한다(다른 AMR로 확장하려면 이
+# 세트를 늘리면 된다) - amr_ready/amr_carrying_complete의 amr_id(int)와
+# AmrArmController를 매핑하는 데 쓴다.
+PICK_PLACE_ROBOT_IDS = ("amr_1", "amr_2")
+# pick/place 목표(demo0725.usd의 pallet/pallet_01/02/03)는 amr_pick_place.py가
+# 직접 읽으므로 여기서는 박스 크기만 필요하다.
+PICK_BOX_SIZE = np.array([0.28, 0.20, 0.11])
 
 WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
@@ -65,7 +74,7 @@ NOVA_CARTER_USD = os.path.expanduser(
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/demo0725/demo0725.usd"
+    "~/cobot3_ws/isaacpjt/demo0726_v2/demo0726_v2.usd"
 )
 
 # NODE_GRAPH 지점 시각화용 색상 — 노드 종류가 아니라 담당 신발 종류(A/B/C/D)로
@@ -261,6 +270,12 @@ def main() -> None:
             spawn_asset(NOVA_CARTER_USD, _prim_path, position=_home_pos, yaw=_home_yaw)
             build_ros2_diffdrive_graph(_robot_id, chassis_prim_path=f"{_prim_path}/chassis_link")
 
+            if _robot_id in PICK_PLACE_ROBOT_IDS:
+                # world.reset()(첫 physics step) 전에 반드시 호출해야 한다 -
+                # 그 뒤에 붙이면 접촉 판정이 영원히 감지되지 않는다(헤드리스로
+                # 확인된 회귀, amr_pick_place.prepare_cone_triggers 참고).
+                prepare_cone_triggers(_prim_path)
+
         for _ in range(5):
             simulation_app.update()
 
@@ -271,8 +286,19 @@ def main() -> None:
         print("[World] reset")
         world.reset()
 
+        amr_arm_controllers: dict[int, AmrArmController] = {}
+        for _robot_id in PICK_PLACE_ROBOT_IDS:
+            _amr_num = int(_robot_id.split("_")[1])
+            amr_arm_controllers[_amr_num] = AmrArmController(
+                robot_id=_robot_id,
+                robot_prim_path=f"/World/{_robot_id}",
+                box_size=PICK_BOX_SIZE,
+                physics_sim_view=world.physics_sim_view,
+            )
+            print(f"[amr_pick_place] {_robot_id} 로봇팔 pick&place 컨트롤러 준비 완료", flush=True)
+
         # 이후 토픽/서비스/Stage 제어 기능은 simulation_node.py에 추가합니다.
-        simulation_node = create_simulation_node()
+        simulation_node = create_simulation_node(amr_arm_controllers=amr_arm_controllers)
 
         print("[World] play")
 

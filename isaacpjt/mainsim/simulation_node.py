@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 import re
 from typing import Final
@@ -16,7 +17,7 @@ from typing import Final
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 
 import omni.timeline
 import omni.usd
@@ -53,6 +54,8 @@ SHOE_STOP_TOPIC: Final[str] = "/shoe_stop"
 START_SCENE_TOPIC: Final[str] = "/control/start_scene"
 AMR_READY_TOPIC: Final[str] = "/fms/amr_ready"
 AMR_CARRYING_COMPLETE_TOPIC: Final[str] = "/fms/amr_carrying_complete"
+SIM_PICK_DONE_TOPIC: Final[str] = "/sim/pick_done"
+SIM_PLACE_DONE_TOPIC: Final[str] = "/sim/place_done"
 
 RELIABLE_EVENT_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
@@ -68,8 +71,11 @@ class RosInterface(Node):
 
         self.emergency_stop = False
         self.start_scene = False
-        self.amr_ready = ""
-        self.amr_carrying_complete = ""
+        # amr_ready/amr_carrying_complete는 "최신값 하나만 저장"이 아니라 큐로
+        # 쌓는다 - 최신값 덮어쓰기 방식이면 같은 내용(예: count가 우연히 같은
+        # 두 번째 amr_ready)의 연속 이벤트를 구분 못 하고 놓칠 수 있다.
+        self.amr_ready_queue: list[str] = []
+        self.amr_carrying_complete_queue: list[str] = []
 
         self.create_subscription(
             Bool, EMERGENCY_STOP_TOPIC, self._on_emergency_stop, 10
@@ -90,6 +96,12 @@ class RosInterface(Node):
         self._shoe_stop_publisher = self.create_publisher(
             Bool, SHOE_STOP_TOPIC, 10
         )
+        self._pick_done_publisher = self.create_publisher(
+            Int32, SIM_PICK_DONE_TOPIC, RELIABLE_EVENT_QOS
+        )
+        self._place_done_publisher = self.create_publisher(
+            Int32, SIM_PLACE_DONE_TOPIC, RELIABLE_EVENT_QOS
+        )
 
     def _on_emergency_stop(self, msg: Bool) -> None:
         self.emergency_stop = msg.data
@@ -98,15 +110,25 @@ class RosInterface(Node):
         self.start_scene = msg.data
 
     def _on_amr_ready(self, msg: String) -> None:
-        self.amr_ready = msg.data
+        self.amr_ready_queue.append(msg.data)
 
     def _on_amr_carrying_complete(self, msg: String) -> None:
-        self.amr_carrying_complete = msg.data
+        self.amr_carrying_complete_queue.append(msg.data)
 
     def publish_shoe_stop(self) -> None:
         msg = Bool()
         msg.data = True
         self._shoe_stop_publisher.publish(msg)
+
+    def publish_pick_done(self, amr_id: int) -> None:
+        msg = Int32()
+        msg.data = amr_id
+        self._pick_done_publisher.publish(msg)
+
+    def publish_place_done(self, amr_id: int) -> None:
+        msg = Int32()
+        msg.data = amr_id
+        self._place_done_publisher.publish(msg)
 
 
 # =====================================================================
@@ -419,7 +441,13 @@ def _find_velocity_attribute(
 # =====================================================================
 
 class SimulationNode:
-    def __init__(self) -> None:
+    def __init__(self, amr_arm_controllers: dict[int, object] | None = None) -> None:
+        # {amr 번호(int): AmrArmController} - /fms/amr_ready, /fms/amr_carrying_complete의
+        # amr_id로 어떤 로봇의 로봇팔을 움직일지 찾는다. 지금은 amr_1(=1)만 등록돼
+        # 있어도 되고, 아예 안 넘기면(비어있으면) pick&place 자동화 없이 기존
+        # 컨베이어/신발 로직만 동작한다.
+        self._amr_arm_controllers: dict[int, object] = amr_arm_controllers or {}
+
         self._stage = omni.usd.get_context().get_stage()
 
         if self._stage is None:
@@ -1060,6 +1088,63 @@ class SimulationNode:
         self._stop_trigger_sequences = remaining
 
     # =================================================================
+    # AMR 로봇팔 pick/place (amr_pick_place.AmrArmController)
+    # =================================================================
+
+    def _update_amr_pick_place(self) -> None:
+        """/fms/amr_ready -> pick 시작, /fms/amr_carrying_complete -> place
+        시작, 매 프레임 각 컨트롤러를 진행시키고 완료되면 /sim/pick_done,
+        /sim/place_done을 발행한다."""
+
+        while self._ros_node.amr_ready_queue:
+            payload = self._ros_node.amr_ready_queue.pop(0)
+            try:
+                parsed = json.loads(payload)
+                amr_id = int(parsed["amr_id"])
+                count = int(parsed.get("count", 1))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                print(f"[amr_pick_place] amr_ready 메시지 파싱 실패: {payload!r}", flush=True)
+                continue
+            controller = self._amr_arm_controllers.get(amr_id)
+            if controller is None:
+                continue  # 이 AMR은 로봇팔 자동화 대상이 아님(아직 amr_1만 등록)
+            if not controller.start_pick(count):
+                print(
+                    f"[amr_pick_place] amr_{amr_id}: pick(count={count}) 시작 실패(phase={controller.phase})",
+                    flush=True,
+                )
+
+        while self._ros_node.amr_carrying_complete_queue:
+            payload = self._ros_node.amr_carrying_complete_queue.pop(0)
+            try:
+                parsed = json.loads(payload)
+                amr_id = int(parsed["amr_id"])
+                shelf_num = int(parsed["shelf_num"])
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                print(f"[amr_pick_place] amr_carrying_complete 메시지 파싱 실패: {payload!r}", flush=True)
+                continue
+            controller = self._amr_arm_controllers.get(amr_id)
+            if controller is None:
+                continue
+            if not controller.start_place(shelf_num):
+                print(
+                    f"[amr_pick_place] amr_{amr_id}: place(shelf_num={shelf_num}) 시작 실패"
+                    f"(phase={controller.phase}, 채워진 슬롯 {controller.occupied_slot_count}개)",
+                    flush=True,
+                )
+
+        for amr_id, controller in self._amr_arm_controllers.items():
+            event = controller.update()
+            if event == "pick_done":
+                self._ros_node.publish_pick_done(amr_id)
+                print(f"[amr_pick_place] amr_{amr_id}: {SIM_PICK_DONE_TOPIC} 발행", flush=True)
+            elif event == "place_done":
+                self._ros_node.publish_place_done(amr_id)
+                print(f"[amr_pick_place] amr_{amr_id}: {SIM_PLACE_DONE_TOPIC} 발행", flush=True)
+            elif event == "pick_failed":
+                print(f"[amr_pick_place] amr_{amr_id}: pick 실패 - amr_ready 재발행 필요", flush=True)
+
+    # =================================================================
     # 매 프레임 실행
     # =================================================================
 
@@ -1070,6 +1155,8 @@ class SimulationNode:
             return
 
         rclpy.spin_once(self._ros_node, timeout_sec=0.0)
+
+        self._update_amr_pick_place()
 
         now = self._timeline.get_current_time()
 
@@ -1206,7 +1293,9 @@ class SimulationNode:
         print("[simulation] SimulationNode 종료")
 
 
-def create_simulation_node() -> SimulationNode:
+def create_simulation_node(
+    amr_arm_controllers: dict[int, object] | None = None,
+) -> SimulationNode:
     """메인 실행 코드에서 호출할 생성 함수입니다."""
 
-    return SimulationNode()
+    return SimulationNode(amr_arm_controllers=amr_arm_controllers)
