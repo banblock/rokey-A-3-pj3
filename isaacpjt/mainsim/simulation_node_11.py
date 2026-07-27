@@ -196,52 +196,6 @@ def _set_prim_inactive(
         print(f"[simulation] 비활성화: {path}")
 
 
-def _disable_missing_dome_light(
-    stage: Usd.Stage,
-) -> None:
-    """누락된 텍스처를 참조하는 조명을 비활성화합니다."""
-
-    target_name = "color_0C0C0C.exr"
-
-    for prim in stage.TraverseAll():
-        if not prim.IsValid():
-            continue
-
-        uses_missing_texture = False
-
-        for attr in prim.GetAttributes():
-            try:
-                value = attr.Get(Usd.TimeCode.Default())
-            except Exception:
-                continue
-
-            if value is not None and target_name in str(value):
-                uses_missing_texture = True
-                break
-
-        if not uses_missing_texture:
-            continue
-
-        prim_path = str(prim.GetPath())
-
-        try:
-            prim.SetActive(False)
-
-            print(
-                "[simulation] 누락 텍스처 조명 비활성화: "
-                f"{prim_path}"
-            )
-
-        except Exception:
-            override_prim = stage.OverridePrim(prim.GetPath())
-            override_prim.SetActive(False)
-
-            print(
-                "[simulation] 누락 텍스처 조명 override 비활성화: "
-                f"{prim_path}"
-            )
-
-
 def prepare_stage() -> None:
     """World.reset() 전에 기존 충돌 그래프를 정리합니다."""
 
@@ -249,8 +203,6 @@ def prepare_stage() -> None:
 
     if stage is None:
         raise RuntimeError("열려 있는 USD Stage가 없습니다.")
-
-    _disable_missing_dome_light(stage)
 
     # 기존 ConveyorBeltGraph 전체는 유지합니다.
     # 실제 물리 노드(OnTick, read_speed, ConveyorNode)는 그대로 사용하고,
@@ -632,10 +584,10 @@ class SimulationNode:
         # Shoebox 초기화
         # -------------------------------------------------------------
 
-        self._shoebox_paths: list[str] = []
-        self._next_shoebox_index = 0
+        # self._shoebox_paths: list[str] = []
+        # self._next_shoebox_index = 0
 
-        self._initialize_shoeboxes()
+        # self._initialize_shoeboxes()
 
         # -------------------------------------------------------------
         # 비전 컨베이어 및 일반 컨베이어 3개 등록
@@ -685,6 +637,7 @@ class SimulationNode:
         self._pending_trigger_shoes: list[str] = []
         self._pending_trigger4_shoes: list[str] = []
         self._pending_stop_trigger_shoes: list[str] = []
+        self._stop_trigger_handled_shoes: set[str] = set()
 
         self._physx_simulation = get_physx_simulation_interface()
         self._trigger_subscription_id = (
@@ -915,7 +868,8 @@ class SimulationNode:
                 )
 
         elif is_stop_trigger:
-            if shoe_path not in self._pending_stop_trigger_shoes:
+            if shoe_path not in self._stop_trigger_handled_shoes:
+                self._stop_trigger_handled_shoes.add(shoe_path)
                 self._pending_stop_trigger_shoes.append(
                     shoe_path
                 )
@@ -959,6 +913,10 @@ class SimulationNode:
             return
 
         selected_path = random.choice(candidates)
+
+        # 다시 투입되는 신발에 대해서만 StopTrigger 감지를 재허용합니다.
+        self._stop_trigger_handled_shoes.discard(selected_path)
+
         shoe_prim = self._get_shoe(selected_path)
 
         if shoe_prim.IsValid():
@@ -1024,69 +982,69 @@ class SimulationNode:
     # Shoebox 처리
     # =================================================================
 
-    def _activate_next_shoebox(self) -> None:
-        """다음 순서의 Shoebox 하나를 활성화합니다."""
+    # def _activate_next_shoebox(self) -> None:
+    #     """다음 순서의 Shoebox 하나를 활성화합니다."""
 
-        if (
-            self._next_shoebox_index
-            >= len(self._shoebox_paths)
-        ):
-            print(
-                "[simulation] 활성화할 남은 Shoebox가 없습니다."
-            )
-            return
+    #     if (
+    #         self._next_shoebox_index
+    #         >= len(self._shoebox_paths)
+    #     ):
+    #         print(
+    #             "[simulation] 활성화할 남은 Shoebox가 없습니다."
+    #         )
+    #         return
 
-        shoebox_path = self._shoebox_paths[
-            self._next_shoebox_index
-        ]
+    #     shoebox_path = self._shoebox_paths[
+    #         self._next_shoebox_index
+    #     ]
 
-        # 비활성 Prim에 현재 Stage의 active=true override를 작성합니다.
-        shoebox_override = self._stage.OverridePrim(
-            shoebox_path
-        )
+    #     # 비활성 Prim에 현재 Stage의 active=true override를 작성합니다.
+    #     shoebox_override = self._stage.OverridePrim(
+    #         shoebox_path
+    #     )
 
-        shoebox_override.SetActive(True)
+    #     shoebox_override.SetActive(True)
 
-        # Compose 결과를 다시 조회합니다.
-        shoebox_prim = self._stage.GetPrimAtPath(
-            shoebox_path
-        )
+    #     # Compose 결과를 다시 조회합니다.
+    #     shoebox_prim = self._stage.GetPrimAtPath(
+    #         shoebox_path
+    #     )
 
-        if not shoebox_prim.IsValid():
-            raise RuntimeError(
-                "Shoebox 활성화 후 Prim을 찾을 수 없습니다: "
-                f"{shoebox_path}"
-            )
+    #     if not shoebox_prim.IsValid():
+    #         raise RuntimeError(
+    #             "Shoebox 활성화 후 Prim을 찾을 수 없습니다: "
+    #             f"{shoebox_path}"
+    #         )
 
-        imageable = UsdGeom.Imageable(
-            shoebox_prim
-        )
+    #     imageable = UsdGeom.Imageable(
+    #         shoebox_prim
+    #     )
 
-        if imageable:
-            imageable.MakeVisible()
+    #     if imageable:
+    #         imageable.MakeVisible()
 
-        # 이전 시뮬레이션의 이동 속도가 남아 있다면 초기화합니다.
-        for attr_name in (
-            "physics:velocity",
-            "physics:angularVelocity",
-        ):
-            attr = shoebox_prim.GetAttribute(
-                attr_name
-            )
+    #     # 이전 시뮬레이션의 이동 속도가 남아 있다면 초기화합니다.
+    #     for attr_name in (
+    #         "physics:velocity",
+    #         "physics:angularVelocity",
+    #     ):
+    #         attr = shoebox_prim.GetAttribute(
+    #             attr_name
+    #         )
 
-            if attr.IsValid():
-                attr.Set(
-                    Gf.Vec3f(0.0, 0.0, 0.0)
-                )
+    #         if attr.IsValid():
+    #             attr.Set(
+    #                 Gf.Vec3f(0.0, 0.0, 0.0)
+    #             )
 
-        self._next_shoebox_index += 1
+    #     self._next_shoebox_index += 1
 
-        print(
-            "[simulation] Shoebox 순차 활성화: "
-            f"{shoebox_path} "
-            f"({self._next_shoebox_index}/"
-            f"{len(self._shoebox_paths)})"
-        )
+    #     print(
+    #         "[simulation] Shoebox 순차 활성화: "
+    #         f"{shoebox_path} "
+    #         f"({self._next_shoebox_index}/"
+    #         f"{len(self._shoebox_paths)})"
+    #     )
 
     # =================================================================
     # 비상정지 처리
@@ -1310,7 +1268,7 @@ class SimulationNode:
             # Trigger 진입 이벤트가 들어왔으면 Shoebox는 반드시 1개 활성화합니다.
             # 기존 Action Graph가 같은 프레임에 신발을 먼저 비활성화해도
             # Shoebox 활성화가 건너뛰어지지 않도록 먼저 처리합니다.
-            self._activate_next_shoebox()
+            # self._activate_next_shoebox()
 
             shoe_prim = self._get_shoe(
                 shoe_path
@@ -1358,6 +1316,7 @@ class SimulationNode:
         self._pending_trigger_shoes.clear()
         self._pending_trigger4_shoes.clear()
         self._pending_stop_trigger_shoes.clear()
+        self._stop_trigger_handled_shoes.clear()
         self._stop_trigger_sequences.clear()
 
         if self._trigger_subscription_id is not None:

@@ -1,10 +1,11 @@
-"""Isaac Sim 신발 순환 및 컨베이어 개별 제어.
+"""Isaac Sim 신발 순환, Shoebox 순차 활성화 및 컨베이어 개별 제어.
 
 주요 기능
 1. 등록된 신발을 시작 시 비활성화합니다.
-2. 시작 시 시작 신호를 받고 신발 하나를 랜덤하게 활성화합니다.
+2. 시작 시 신발 하나를 랜덤하게 활성화합니다.
 3. 이후 일정 시간마다 비활성 신발 하나를 랜덤하게 활성화합니다.
 4. /World/ShoeTrigger에 도착한 신발을 비활성화합니다.
+5. 신발 한 개가 ShoeTrigger에 도착할 때마다 Shoebox를 순차 활성화합니다.
 """
 
 from __future__ import annotations
@@ -742,16 +743,6 @@ class SimulationNode:
     def _activate_random_shoe(self) -> None:
         """비활성 상태인 신발 중 하나를 랜덤하게 활성화합니다."""
 
-        if (
-            self._emergency_stopped
-            or self._ros_node.emergency_stop
-        ):
-            print(
-                "[SHOE ACTIVATE BLOCKED] "
-                "비상정지 상태이므로 신발 활성화를 차단합니다."
-            )
-            return
-
         candidates: list[str] = []
 
         for shoe_path in SHOE_PATHS:
@@ -967,38 +958,13 @@ class SimulationNode:
         self._ros_node.publish_shoe_stop()
         print(f"[simulation] {SHOE_STOP_TOPIC}: data=True 발행")
 
-    def _start_stop_trigger_sequence(
-        self,
-        shoe_path: str,
-    ) -> None:
-        """신발별 StopTrigger 시퀀스를 시작합니다."""
-
-        # 같은 신발의 시퀀스가 이미 진행 중이면 중복 시작하지 않습니다.
-        for sequence in self._stop_trigger_sequences:
-            if str(sequence["shoe_path"]) == shoe_path:
-                print(
-                    "[STOP_SEQUENCE DUPLICATE] "
-                    f"shoe={shoe_path}, "
-                    "이미 진행 중인 시퀀스이므로 무시"
-                )
-                return
-
-        started_at = self._timeline.get_current_time()
-
+    def _start_stop_trigger_sequence(self) -> None:
         self._stop_trigger_sequences.append(
             {
-                "shoe_path": shoe_path,
-                "started_at": started_at,
+                "started_at": self._timeline.get_current_time(),
                 "stopped": False,
                 "restarted": False,
             }
-        )
-
-        print(
-            "[STOP_SEQUENCE START] "
-            f"shoe={shoe_path}, "
-            f"time={started_at:.3f}, "
-            f"active_sequences={len(self._stop_trigger_sequences)}"
         )
 
     def _update_stop_trigger_sequences(
@@ -1008,7 +974,6 @@ class SimulationNode:
         remaining: list[dict[str, object]] = []
 
         for sequence in self._stop_trigger_sequences:
-            shoe_path = str(sequence["shoe_path"])
             started_at = float(sequence["started_at"])
             elapsed = max(0.0, now - started_at)
 
@@ -1019,13 +984,6 @@ class SimulationNode:
                 self._working_conveyor_velocity_attr.Set(0.0)
                 self._publish_shoe_stop()
                 sequence["stopped"] = True
-
-                print(
-                    "[STOP_SEQUENCE STOP] "
-                    f"shoe={shoe_path}, "
-                    f"elapsed={elapsed:.3f}, "
-                    f"time={now:.3f}"
-                )
 
             if (
                 not bool(sequence["restarted"])
@@ -1038,24 +996,11 @@ class SimulationNode:
                 self._working_conveyor_velocity_attr.Set(1.0)
                 sequence["restarted"] = True
 
-                print(
-                    "[STOP_SEQUENCE RESTART] "
-                    f"shoe={shoe_path}, "
-                    f"elapsed={elapsed:.3f}, "
-                    f"time={now:.3f}"
-                )
-
             if not (
                 bool(sequence["stopped"])
                 and bool(sequence["restarted"])
             ):
                 remaining.append(sequence)
-            else:
-                print(
-                    "[STOP_SEQUENCE COMPLETE] "
-                    f"shoe={shoe_path}, "
-                    f"remaining_sequences={len(remaining)}"
-                )
 
         self._stop_trigger_sequences = remaining
 
@@ -1131,16 +1076,8 @@ class SimulationNode:
             return
 
         while self._pending_stop_trigger_shoes:
-            shoe_path = self._pending_stop_trigger_shoes.pop(0)
-
-            print(
-                "[STOP_PENDING POP] "
-                f"shoe={shoe_path}, "
-                f"remaining_pending="
-                f"{len(self._pending_stop_trigger_shoes)}"
-            )
-
-            self._start_stop_trigger_sequence(shoe_path)
+            self._pending_stop_trigger_shoes.pop(0)
+            self._start_stop_trigger_sequence()
 
         self._update_stop_trigger_sequences(now)
 
@@ -1171,8 +1108,6 @@ class SimulationNode:
 
         if (
             self._scene_started
-            and not self._emergency_stopped
-            and not self._ros_node.emergency_stop
             and self._next_activation_time is not None
             and now >= self._next_activation_time
         ):
