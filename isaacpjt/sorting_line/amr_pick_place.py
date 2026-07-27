@@ -60,7 +60,7 @@ CONE_CONTACT_LOCAL_OFFSET = (0.0, 0.0, -0.0015)
 # 똑같아서(헤드리스로 실측 비교) 하강 속도 자체가 원인은 아닌 것으로
 # 보인다 - 트리거 콘의 접촉 판정 허용 오차 때문에 생기는 것으로 보이고,
 # 속도를 늦춰도 줄어들지 않으니 굳이 느리게 할 필요가 없다.
-EVENTS_DT = [0.008, 0.02, 0.5, 1, 0.02, 0.01, 0.02, 1, 0.02, 0.008]
+EVENTS_DT = [0.008, 0.02, 0.5, 1, 0.002, 0.01, 0.02, 1, 0.02, 0.008]
 # 표면보다 살짝 아래를 목표로 잡아 콘 트리거 접촉을 보장한다. 흡착 순간
 # 박스가 밀리며 최대 17도까지 회전하는 문제가 있어(2026-07-26, 사용자 확인)
 # 두 가지를 시도했지만 둘 다 실패:
@@ -79,7 +79,7 @@ PICK_DESCEND_OFFSET_Z = -0.015
 # 스냅샷) 목표 위치가 완전히 엉뚱하게 계산되는 회귀가 실제로 있었다(헤드리스로
 # 확인 - 보관함 목표 z가 정상 범위 밖으로 튐 -> 흡착 실패). 다음 반복 시작 전
 # 이만큼 프레임 동안 아무 것도 안 하고 흔들림이 가라앉기를 기다린다.
-COOLDOWN_STEPS = 60
+COOLDOWN_STEPS = 5
 
 # 사이클이 끝난 뒤 팔이 멈추는 관절 자세는(RMPflow가 스스로 고른 경로라)
 # 매번 조금씩 다르다 - 그 애매한 자세에서 다음 목표(특히 pallet처럼 높은
@@ -104,7 +104,7 @@ RETURN_HOME_TOLERANCE_RAD = 0.02
 # 보임) 불안정해져서 관절 속도가 초당 10rad/s 이상으로 치솟는 게 헤드리스로
 # 확인됐다(장애물 회피를 꺼도 재현 - RMPflow 자체 불안정) - 원인을 RMPflow
 # 내부에서 고치는 대신, 매 스텝 명령을 이 이상 못 튀게 직접 제한한다.
-MAX_JOINT_STEP_RAD = 0.03  # 60Hz 기준 대략 1.8rad/s에 해당
+MAX_JOINT_STEP_RAD = 0.12  # 60Hz 기준 대략 7.2rad/s에 해당(기존 0.03=1.8rad/s에서 완화)
 
 # 위의 여러 안전장치(팔레트 장애물 등록, 홈 복귀, 속도 클램프)를 적용해도
 # RMPflow가 가끔 이번 시도에서만 흡착에 실패할 수 있다 - "픽업은 무조건
@@ -121,25 +121,22 @@ DEFAULT_BOX_SIZE = np.array([0.28, 0.20, 0.11])
 # 중엔 FixedJoint로 용접되니 실제로 박스 위에 박스를 얹어도 안 떨어진다).
 # 층 간격 = 박스 높이(0.13) + 여유(0.02). 아래층부터 순서대로 채운다.
 STORAGE_LAYER_HEIGHT = 0.15
-# "저장소까지 안 내려가짐"(박스가 선반보다 최대 12cm 위에 뜬 채로 놓임)
-# 문제의 진짜 원인은 RMPflow 한계가 아니라, StorageBox 선반 자체가
-# chassis_link/visual(차체 몸체, 진짜 콜라이더) 지오메트리와 실제로
-# 겹쳐 있었던 것이었다(2026-07-27, 사용자 지적 후 실측 확인 - 로컬 X
-# [-0.85,-0.45]인 StorageBox가 visual의 로컬 X [-0.587,0.12]와 13.7cm
-# 겹침). 그래서 박스를 선반 실제 높이까지 내리려면 반드시 visual과
-# 부딪혀야 했다. 충돌 필터링(FilteredPairsAPI)으로 우회를 시도했으나
-# 동적으로 스폰되는 박스에는 적용되지 않는 것으로 보여(Cone/Plate처럼
-# reset 전에 등록해야 하는데 박스는 reset 이후에 생성됨) 효과가 없었다.
-# 대신 nova_carter_ur5e_surface_gripper.usd의 StorageBox 자체를 X로
-# 0.2m 더 뒤로 옮겨서(-0.65 -> -0.85) visual과 완전히 안 겹치게 만들었다
-# (move_storagebox.py로 수정, 6.3cm 여유 확인) - 이 X값을 아래서도
-# 그대로 맞춰야 한다. 더 이상 물리적으로 막히지 않으므로 이전에 층별/
-# 슬롯별로 넣었던 Z 보정(_STORAGE_SLOT_Z_COMPENSATION)은 제거했다 -
-# 필요하면 재실측해서 다시 넣는다.
+# "저장소까지 안 내려가짐"(박스가 선반보다 뜬 채로 놓임) 문제는 두 가지
+# 원인이 겹쳐 있었다: (1) StorageBox 선반이 chassis_link/visual(차체
+# 몸체, 진짜 콜라이더)과 실제로 겹쳐 있던 것 - nova_carter_ur5e_surface_
+# gripper.usd의 StorageBox를 X로 0.2m 뒤로 옮겨서(-0.65 -> -0.85)
+# 해결(move_storagebox.py, 2026-07-27). (2) 그것과 별개로, 그 자리에서
+# 팔이 실제로 내려갈 수 있는 RMPflow 한계가 여전히 있어서(자체 충돌
+# 회피로 보임), EVENTS_DT를 바꿔서 하강 속도가 달라질 때마다 실제 도달
+# 높이도 같이 바뀐다 - 그래서 층별/슬롯별 Z 보정이 계속 필요하다. 목표를
+# 낮추면 오히려 격차만 벌어지고(실측 확인됨), 실측된 "실제 도달 높이"에
+# 맞춰 목표를 올려야 한다. check_all_slots_gap.py로 슬롯 6개 전부
+# 재실측해서 보정했다(2026-07-27, EVENTS_DT 변경 후 재조정).
+_STORAGE_SLOT_Z_COMPENSATION = [0.0898, 0.1456, 0.0749, 0.0929, 0.0945, 0.0044]
 STORAGE_SLOT_LOCAL_POSITIONS = [
-    np.array([-0.85, y, 0.44 + layer * STORAGE_LAYER_HEIGHT])
+    np.array([-0.85, y, 0.44 + layer * STORAGE_LAYER_HEIGHT + _STORAGE_SLOT_Z_COMPENSATION[layer * 2 + col]])
     for layer in range(3)
-    for y in (-0.13, 0.13)
+    for col, y in enumerate((-0.13, 0.13))
 ]
 
 # 실제 demo0725.usd의 pallet prim들을 pick/place 대상으로 쓴다(2026-07-26
@@ -570,15 +567,14 @@ class AmrArmController:
 
         prim_path = f"/World/_pick_box_{self.robot_id}_{self._next_box_serial}"
         self._next_box_serial += 1
+        # _nearest_point_on_pallet_top이 이미 raycast로 실제 pallet 표면을
+        # 찾아서 주는 지점이니, 그 자리에 정확히 스폰한다(2026-07-27, 사용자
+        # 요청 - "착지하는 위치 확인하고 그 위치에 스폰"). 예전엔 스폰 직후
+        # 자유낙하로 자연스럽게 안착시키려고 위쪽에 여유(0.05m)를 두고
+        # 스폰했는데, 그러면 착지 직후 얼마간은 반드시 dynamic 상태로
+        # 흔들림/구르는 게 생긴다 - 처음부터 정확한 위치에 놓고 kinematic으로
+        # 스폰하면 그 흔들림 자체가 생기지 않는다.
         spawn_pos = self._nearest_point_on_pallet_top(PICK_PALLET_PATH)
-        # 계산한 높이에 정확히 스폰하면, pallet 내부 구조가 복잡해질 때마다
-        # (사용자가 USD를 반복 수정하면서 계속 바뀜, 2026-07-27) 아주 살짝만
-        # 겹쳐도 PhysX가 깊은 침투로 오인해 박스를 포물선으로 튕겨 날려버리는
-        # 문제가 반복됐다. 정확한 안착 높이를 완벽히 맞추려 애쓰는 대신,
-        # 확실히 위쪽 빈 공간에서 스폰해 자유낙하로 자연스럽게 안착시킨다 -
-        # 어차피 update()의 picking_position은 박스의 실시간 위치를 그대로
-        # 읽으므로(_read_box_pose) 스폰 높이가 정확할 필요가 없다.
-        spawn_pos = spawn_pos + np.array([0.0, 0.0, 0.05])
         # pallet 바닥의 실제 회전(yaw)에 박스도 맞춰 돌려서 스폰한다 - 그래야
         # world 축 기준으로는 넓어 보이는 마름모꼴 바닥 안에 박스가 실제로도
         # 딱 들어간다(위 _pallet_yaw 설명 참고).
@@ -593,6 +589,13 @@ class AmrArmController:
             color=np.array([0.0, 0.0, 1.0]),
             mass=1.1,
         )
+        # kinematic으로 스폰했다가 흡착 시점에 dynamic으로 되돌리는 방식을
+        # 시도해봤는데(2026-07-27), 실행 중(physics_sim_view 활성화 후)
+        # kinematicEnabled를 바꾸는 게 tensor 기반 physics view에 제대로
+        # 반영이 안 돼서 흡착 자체가 안 되고(closed=False 유지) 섀시가 1m
+        # 넘게 표류하는 심각한 회귀가 생겼다 - 되돌렸다. 스폰 위치를
+        # raycast로 찾은 정확한 표면으로 맞춘 것(위 여유 0.05m 제거)만
+        # 유지한다.
         return prim_path
 
     # -----------------------------------------------------------------
@@ -641,6 +644,47 @@ class AmrArmController:
         target_rot = storage_mat.ExtractRotationQuat()
         gripper_rot_new = target_rot * self._grasp_rel_rot
         return np.array([gripper_rot_new.GetReal(), *gripper_rot_new.GetImaginary()])
+
+    def _carried_box_touches_landing_surface(self) -> bool:
+        """지금 옮기고 있는 박스가 StorageBox 선반이나 이미 그 슬롯 칸에
+        놓여있는 다른 박스와 실제로(물리적으로) 맞닿았는지 physx overlap
+        쿼리로 직접 확인한다. event6(내려놓으러 하강) 도중 이게 True가 되면
+        곧바로 놓기(event7)로 넘어간다 - 목표 높이가 정확히 몇 cm인지
+        몰라도, 실제로 닿는 순간 알아서 멈추게 하기 위함이다."""
+        import carb
+        from omni.physx import get_physx_scene_query_interface
+
+        stage = omni.usd.get_context().get_stage()
+        box_prim = stage.GetPrimAtPath(self._current_box_prim_path)
+        if not box_prim.IsValid():
+            return False
+        bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+        rng = bbox_cache.ComputeWorldBound(box_prim).ComputeAlignedRange()
+        bmin, bmax = np.array(rng.GetMin()), np.array(rng.GetMax())
+        if bmin[0] > bmax[0]:
+            return False
+        center = (bmin + bmax) / 2.0
+        half_ext = (bmax - bmin) / 2.0
+        target_prefixes = [self._storage_box_path] + [
+            p for p in self._slot_box_paths if p and p != self._current_box_prim_path
+        ]
+        hits = []
+
+        def report_hit(hit):
+            rb = str(hit.rigid_body)
+            if any(rb.startswith(p) for p in target_prefixes):
+                hits.append(rb)
+                return False
+            return True
+
+        get_physx_scene_query_interface().overlap_box(
+            carb.Float3(float(half_ext[0]), float(half_ext[1]), float(half_ext[2])),
+            carb.Float3(float(center[0]), float(center[1]), float(center[2])),
+            carb.Float4(0.0, 0.0, 0.0, 1.0),
+            report_hit,
+            False,
+        )
+        return len(hits) > 0
 
     # -----------------------------------------------------------------
     # 내부 helper - StorageBox 용접(gripper와 별개, 슬롯<->박스 고정)
@@ -831,6 +875,20 @@ class AmrArmController:
         # 정확히 시작하게 한다.
         if self._controller.get_current_event() == 7:
             self._cycle_target[2] = float(source_pos[2])
+
+        # event6(내려놓으러 하강)는 pick과 달리 실제 접촉을 확인하지 않고
+        # 정해진 시간(EVENTS_DT[6])만큼 내려가다 그냥 멈춘다 - 그래서 물리
+        # 파라미터(감쇠 등)가 바뀔 때마다 "실제로 도달하는 높이"가 달라져도
+        # 알아챌 방법이 없어서, 슬롯마다 목표 높이를 수동으로 다시 재보정해야
+        # 했다(2026-07-27, 사용자 지적 - "박스가 임시 저장소랑 충돌했을 때
+        # 내려놓는 거 맞아?" - 답은 "아니오"였음). pick의 콘 트리거처럼, 옮기고
+        # 있는 박스가 실제로 선반/이미 놓인 박스와 맞닿으면 그 즉시 event를
+        # 7(놓기)로 넘겨서, 목표 높이 보정 없이도 항상 정확히 닿는 순간
+        # 내려놓게 한다.
+        if self._phase == "pick_to_storage" and self._controller.get_current_event() == 6:
+            if self._carried_box_touches_landing_surface():
+                self._controller._event = 7
+                self._controller._t = 0.0
 
         actions = self._controller.forward(
             picking_position=source_pos,
