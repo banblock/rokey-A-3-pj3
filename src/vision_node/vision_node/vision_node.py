@@ -124,11 +124,12 @@ class VisionNode(Node):
         )
 
         self.get_logger().info(f'Vision node initialized (model: {self.model_path})')
-
+        
         self.pub_result_img1 = self.create_publisher(Image, '/vision/result_img1', 10)
         self.pub_result_img2 = self.create_publisher(Image, '/vision/result_img2', 10)
         self.pub_result_img3 = self.create_publisher(Image, '/vision/result_img3', 10)
 
+        self.pub_result_imgs =[self.pub_result_img1, self.pub_result_img2, self.pub_result_img3]
     # ------------------------------------------------------------------
     def _load_model(self, path, label):
         try:
@@ -493,15 +494,36 @@ class VisionNode(Node):
                         'bbox': [cx0 + ox, cy0 + oy, cx1 + ox, cy1 + oy],
                     })
 
+        pub_count = 0
         for image, dets in zip(images, dets_per_image):
             annotated = self._draw_dets(image, dets)
-            img_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
-            self.pub_result_img1.publish(img_msg)
+            # img_msg = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
+            img_msg = self.result_send_annotated(annotated=annotated)
+            self.pub_result_imgs[pub_count].publish(img_msg)
+            pub_count += 1
             if self.save_debug_image:
                 debug_path = f'/home/rokey/debug_inference/debug_inference_{time.time()}.png'
                 cv2.imwrite(debug_path, annotated)
 
         return dets_per_image
+
+    def result_send_annotated(self, annotated):
+        annotated_re = np.asarray(annotated)
+
+        if annotated_re.dtype != np.uint8:
+            annotated_re = np.clip(annotated_re, 0, 255).astype(np.uint8)
+
+        annotated_re = np.ascontiguousarray(annotated_re)
+
+        img_msg = Image()
+        img_msg.header.stamp = self.get_clock().now().to_msg()
+        img_msg.height = annotated_re.shape[0]
+        img_msg.width = annotated_re.shape[1]
+        img_msg.encoding = 'bgr8'
+        img_msg.is_bigendian = False
+        img_msg.step = annotated_re.shape[1] * 3
+        img_msg.data = annotated_re.tobytes()
+        return img_msg
 
     @staticmethod
     def _draw_dets(image: np.ndarray, dets: list) -> np.ndarray:
