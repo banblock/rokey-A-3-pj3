@@ -431,7 +431,7 @@ class DashboardWindow(QMainWindow):
             ("pause", "PAUSE", "warning"),
             ("restart", "RESTART", "secondary"),
             ("stop", "STOP", "danger"),
-            ("reset", "RESET", "secondary"),
+            # ("reset", "RESET", "secondary"),
         ]
 
         for command, text, kind in commands:

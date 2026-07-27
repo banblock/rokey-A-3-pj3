@@ -34,7 +34,7 @@ START_SERVICE = "/control/start"
 PAUSE_SERVICE = "/control/pause"
 RESTART_SERVICE = "/control/restart"
 STOP_SERVICE = "/control/stop"
-RESET_SERVICE = "/control/reset"
+# RESET_SERVICE = "/control/reset"
 
 FMS_RESTART_SERVICE = "/fms/restart"
 
@@ -91,7 +91,6 @@ class DashboardRosNode(Node):
         Pause
         Restart
         Stop
-        Reset
     """
 
     def __init__(self, signals: RosSignals) -> None:
@@ -209,11 +208,11 @@ class DashboardRosNode(Node):
                 STOP_SERVICE,
                 callback_group=self.callback_group,
             ),
-            "reset": self.create_client(
-                Trigger,
-                RESET_SERVICE,
-                callback_group=self.callback_group,
-            ),
+            # "reset": self.create_client(
+            #     Trigger,
+            #     RESET_SERVICE,
+            #     callback_group=self.callback_group,
+            # ),
             "fms_restart": self.create_client(
                 Trigger,
                 FMS_RESTART_SERVICE,
@@ -262,7 +261,7 @@ class DashboardRosNode(Node):
             msg,
             desired_encoding="bgr8",
         )
-        self.signals.model_result_image3.emit(frame)
+        self.signals.model_result_image3.emit(frame)    
 
     # ========================================================
     # JSON callbacks
@@ -348,7 +347,6 @@ class DashboardRosNode(Node):
             pause
             restart
             stop
-            reset
         """
 
         client = self.service_clients.get(command)
