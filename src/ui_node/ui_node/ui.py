@@ -167,22 +167,24 @@ class DashboardWindow(QMainWindow):
             self._create_result_images_card(),
             0,
             2,
+            2,
+            1,
         )
 
+        # content.addWidget(
+        #     self._create_system_status_card(),
+        #     1,
+        #     0,
+        # )
         content.addWidget(
-            self._create_system_status_card(),
+            self._create_processed_shoe_card(),
             1,
             0,
         )
         content.addWidget(
-            self._create_processed_shoe_card(),
-            1,
-            1,
-        )
-        content.addWidget(
             self._create_alert_card(),
             1,
-            2,
+            1,
         )
 
         content.addWidget(
@@ -310,9 +312,9 @@ class DashboardWindow(QMainWindow):
         result_layout.setSpacing(8)
 
         self.model_result_views = [
-            ImageView("RESULT IMAGE 1", minimum_height=130),
-            ImageView("RESULT IMAGE 2", minimum_height=130),
-            ImageView("RESULT IMAGE 3", minimum_height=130),
+            ImageView("RESULT IMAGE 1", minimum_height=140),
+            ImageView("RESULT IMAGE 2", minimum_height=140),
+            ImageView("RESULT IMAGE 3", minimum_height=140),
         ]
 
         for view in self.model_result_views:
@@ -512,44 +514,44 @@ class DashboardWindow(QMainWindow):
     # ROS data -> UI
     # ========================================================
 
-    def _update_system_status(
-        self,
-        data: dict[str, Any],
-    ) -> None:
-        online_count = 0
+    # def _update_system_status(
+    #     self,
+    #     data: dict[str, Any],
+    # ) -> None:
+    #     online_count = 0
 
-        for name, badge in (
-            self.system_status_badges.items()
-        ):
-            value = str(
-                data.get(name, "offline")
-            )
-            style = self._map_status_style(value)
+    #     for name, badge in (
+    #         self.system_status_badges.items()
+    #     ):
+    #         value = str(
+    #             data.get(name, "offline")
+    #         )
+    #         style = self._map_status_style(value)
 
-            badge.set_status(value, style)
+    #         badge.set_status(value, style)
 
-            if style == "ok":
-                online_count += 1
+    #         if style == "ok":
+    #             online_count += 1
 
-        if online_count == len(
-            self.system_status_badges
-        ):
-            self.overall_status_badge.set_status(
-                "SYSTEM RUNNING",
-                "ok",
-            )
+    #     if online_count == len(
+    #         self.system_status_badges
+    #     ):
+    #         self.overall_status_badge.set_status(
+    #             "SYSTEM RUNNING",
+    #             "ok",
+    #         )
 
-        elif online_count == 0:
-            self.overall_status_badge.set_status(
-                "SYSTEM OFFLINE",
-                "offline",
-            )
+    #     elif online_count == 0:
+    #         self.overall_status_badge.set_status(
+    #             "SYSTEM OFFLINE",
+    #             "offline",
+    #         )
 
-        else:
-            self.overall_status_badge.set_status(
-                "SYSTEM DEGRADED",
-                "warning",
-            )
+    #     else:
+    #         self.overall_status_badge.set_status(
+    #             "SYSTEM DEGRADED",
+    #             "warning",
+    #         )
 
     # def _update_result_images(self, data: Any) -> None:
     #     if isinstance(data, (list, tuple)):
@@ -724,30 +726,30 @@ class DashboardWindow(QMainWindow):
                     child_layout
                 )
 
-    @staticmethod
-    def _map_status_style(value: str) -> str:
-        normalized = value.strip().lower()
+    # @staticmethod
+    # def _map_status_style(value: str) -> str:
+    #     normalized = value.strip().lower()
 
-        if normalized in {
-            "online",
-            "running",
-            "connected",
-            "ready",
-            "active",
-            "normal",
-        }:
-            return "ok"
+    #     if normalized in {
+    #         "online",
+    #         "running",
+    #         "connected",
+    #         "ready",
+    #         "active",
+    #         "normal",
+    #     }:
+    #         return "ok"
 
-        if normalized in {
-            "warning",
-            "delayed",
-            "paused",
-            "degraded",
-            "busy",
-        }:
-            return "warning"
+    #     if normalized in {
+    #         "warning",
+    #         "delayed",
+    #         "paused",
+    #         "degraded",
+    #         "busy",
+    #     }:
+    #         return "warning"
 
-        return "offline"
+    #     return "offline"
 
     @staticmethod
     def _map_alert_style(level: str) -> str:
