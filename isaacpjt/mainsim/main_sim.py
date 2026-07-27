@@ -49,7 +49,7 @@ from fleet_config_test1 import (
     robot_spawn_yaw,
 )
 
-from isaacpjt.mainsim.simulation_node import (
+from simulation_node import (
     SimulationNode,
     create_simulation_node,
     prepare_stage,
