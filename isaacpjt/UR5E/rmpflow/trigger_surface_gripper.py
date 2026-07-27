@@ -114,6 +114,18 @@ class TriggerSurfaceGripper(Gripper):
             tip_world = Gf.Vec3d(tip_world[0], tip_world[1], target_top_z)
 
         rel_local = target_mat.GetInverse().Transform(tip_world)
+        # LocalPos0(GripperBase 쪽 조인트 프레임)를 고정된 self._tip_local_offset
+        # 그대로 쓰면, 위에서 tip_world의 Z를 박스 표면으로 스냅한 만큼
+        # LocalPos0/LocalPos1이 서로 다른 실제 지점을 가리키게 된다 - 이 두
+        # 프레임의 world 위치가 어긋난 채로 조인트가 생성되면 PhysX가 다음
+        # 스텝에 그 간격만큼 강제로 스냅해서 GripperBase(따라서 팔 전체,
+        # 섀시까지)에 충격을 준다("found a joint with disjointed body
+        # transforms" 경고 - 2026-07-27, 사용자가 흡착 시 로봇 전체가 흔들리는
+        # 것으로 확인, 박스 속도는 그 시점에 이미 0에 가까워 타이밍 문제가
+        # 아니라 순수 기하학적 불일치였음을 실측으로 확인). LocalPos0도 스냅된
+        # tip_world를 GripperBase 로컬 좌표로 역변환해서 두 프레임이 항상
+        # 같은 지점을 가리키게 한다.
+        local_pos0 = gripper_mat.GetInverse().Transform(tip_world)
         gripper_rot = gripper_mat.ExtractRotationQuat()
         target_rot = target_mat.ExtractRotationQuat()
         local_rot1 = target_rot.GetInverse() * gripper_rot
@@ -121,7 +133,7 @@ class TriggerSurfaceGripper(Gripper):
         joint = UsdPhysics.FixedJoint.Define(stage, self._joint_path)
         joint.CreateBody0Rel().SetTargets([Sdf.Path(self._gripper_body_path)])
         joint.CreateBody1Rel().SetTargets([Sdf.Path(target_path)])
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(self._tip_local_offset))
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(local_pos0))
         joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
         joint.CreateLocalPos1Attr().Set(Gf.Vec3f(rel_local))
         joint.CreateLocalRot1Attr().Set(Gf.Quatf(local_rot1))

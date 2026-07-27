@@ -60,7 +60,7 @@ CONE_CONTACT_LOCAL_OFFSET = (0.0, 0.0, -0.0015)
 # 똑같아서(헤드리스로 실측 비교) 하강 속도 자체가 원인은 아닌 것으로
 # 보인다 - 트리거 콘의 접촉 판정 허용 오차 때문에 생기는 것으로 보이고,
 # 속도를 늦춰도 줄어들지 않으니 굳이 느리게 할 필요가 없다.
-EVENTS_DT = [0.008, 0.004, 0.05, 0.3, 0.0035, 0.01, 0.00125, 0.15, 0.008, 0.08]
+EVENTS_DT = [0.008, 0.02, 0.5, 1, 0.02, 0.01, 0.02, 1, 0.02, 0.008]
 # 표면보다 살짝 아래를 목표로 잡아 콘 트리거 접촉을 보장한다. 흡착 순간
 # 박스가 밀리며 최대 17도까지 회전하는 문제가 있어(2026-07-26, 사용자 확인)
 # 두 가지를 시도했지만 둘 다 실패:
@@ -121,20 +121,23 @@ DEFAULT_BOX_SIZE = np.array([0.28, 0.20, 0.11])
 # 중엔 FixedJoint로 용접되니 실제로 박스 위에 박스를 얹어도 안 떨어진다).
 # 층 간격 = 박스 높이(0.13) + 여유(0.02). 아래층부터 순서대로 채운다.
 STORAGE_LAYER_HEIGHT = 0.15
-# RMPflow에 이 좌표를 목표로 그대로 넘기면, 아래층일수록 목표보다 한참
-# 위(최대 ~10cm)에서 멈춰버린다 - "저장소까지 안 내려가짐"의 원인이었다
-# (2026-07-26, check_all_slots_gap.py로 6칸 전부 실측). 처음엔 "부족한 만큼
-# 목표를 낮추면 되겠지"라 생각했는데, 실제로 해보니(목표를 낮췄더니) 실제
-# 도달 높이(apex_z)는 거의 그대로고 격차만 더 벌어졌다 - 즉 목표가 낮아서
-# 못 미치는 게 아니라, 그 XY 위치에서 팔이 실제로 내려갈 수 있는 물리적
-# 한계(자체 충돌 회피로 보임)가 따로 있고 그 이하로는 목표를 아무리 낮춰도
-# 소용없다는 뜻이다. 그래서 반대로, 실측된 "실제 도달 높이"에 맞춰 목표를
-# 그만큼 올려서(목표=한계 부근) 팔이 목표에 최대한 정확히 도달하게 한다 -
-# _weld_box_to_slot은 박스의 "실제 도착 위치"에 용접하므로 이렇게 목표를
-# 올려도 최종적으로 그 높이에 안정적으로 놓인다.
-_STORAGE_LAYER_Z_COMPENSATION = [0.094, 0.075, 0.0]
+# "저장소까지 안 내려가짐"(박스가 선반보다 최대 12cm 위에 뜬 채로 놓임)
+# 문제의 진짜 원인은 RMPflow 한계가 아니라, StorageBox 선반 자체가
+# chassis_link/visual(차체 몸체, 진짜 콜라이더) 지오메트리와 실제로
+# 겹쳐 있었던 것이었다(2026-07-27, 사용자 지적 후 실측 확인 - 로컬 X
+# [-0.85,-0.45]인 StorageBox가 visual의 로컬 X [-0.587,0.12]와 13.7cm
+# 겹침). 그래서 박스를 선반 실제 높이까지 내리려면 반드시 visual과
+# 부딪혀야 했다. 충돌 필터링(FilteredPairsAPI)으로 우회를 시도했으나
+# 동적으로 스폰되는 박스에는 적용되지 않는 것으로 보여(Cone/Plate처럼
+# reset 전에 등록해야 하는데 박스는 reset 이후에 생성됨) 효과가 없었다.
+# 대신 nova_carter_ur5e_surface_gripper.usd의 StorageBox 자체를 X로
+# 0.2m 더 뒤로 옮겨서(-0.65 -> -0.85) visual과 완전히 안 겹치게 만들었다
+# (move_storagebox.py로 수정, 6.3cm 여유 확인) - 이 X값을 아래서도
+# 그대로 맞춰야 한다. 더 이상 물리적으로 막히지 않으므로 이전에 층별/
+# 슬롯별로 넣었던 Z 보정(_STORAGE_SLOT_Z_COMPENSATION)은 제거했다 -
+# 필요하면 재실측해서 다시 넣는다.
 STORAGE_SLOT_LOCAL_POSITIONS = [
-    np.array([-0.65, y, 0.44 + layer * STORAGE_LAYER_HEIGHT + _STORAGE_LAYER_Z_COMPENSATION[layer]])
+    np.array([-0.85, y, 0.44 + layer * STORAGE_LAYER_HEIGHT])
     for layer in range(3)
     for y in (-0.13, 0.13)
 ]
@@ -304,6 +307,7 @@ class AmrArmController:
         self._phase = "idle"
         self._contact_seen = False
         self._grasp_confirmed = False
+        self._grasp_rel_rot: Optional[Gf.Quatd] = None
         self._welded_this_rep = False
         self._retry_count = 0
         self._cycle_target: Optional[np.ndarray] = None
@@ -481,6 +485,17 @@ class AmrArmController:
         잡는다. 이 마진에는 박스 자신의 반너비도 더한다 - 마진을 중심점
         기준으로만 계산하면 박스 자체가 커서 몸통 절반이 pallet 바닥 밖으로
         걸쳐 나가 AMR 쪽으로 떨어지는 문제가 있었다(GUI에서 확인된 회귀).
+
+        pallet 내부에 벽/기둥이 있어도, 목표 높이를 "바닥"이 아니라 항상
+        pallet 전체 bbox의 꼭대기로 잡아두면 그 어떤 XY를 골라도 Z가 모든
+        내부 구조물보다 위에 있어서 절대 겹칠 수 없다 - 한때 팔 리치가
+        부족해서(벽이 너무 높아져서) 바닥/raycast 기반으로 바꿔봤는데,
+        그러자 목표 Z가 벽의 Z 범위 안으로 들어가면서 XY가 벽 위치와
+        겹치는 경우 실제로 충돌해 박스가 튕겨나가는 회귀가 생겼다
+        (2026-07-27, 사용자 확인 - "기존에는 왜 안 부딪혔지?"에 대한 답:
+        원래는 Z가 항상 벽보다 높아서 안 부딪혔던 것). 지금은 벽 높이가
+        다시 리치 안쪽으로 낮아졌으니, 원래의 "무조건 꼭대기" 방식으로
+        되돌린다 - 더 이상 raycast/바닥 탐색이 필요 없다.
         """
         stage = omni.usd.get_context().get_stage()
         pallet_prim = stage.GetPrimAtPath(pallet_path)
@@ -556,6 +571,14 @@ class AmrArmController:
         prim_path = f"/World/_pick_box_{self.robot_id}_{self._next_box_serial}"
         self._next_box_serial += 1
         spawn_pos = self._nearest_point_on_pallet_top(PICK_PALLET_PATH)
+        # 계산한 높이에 정확히 스폰하면, pallet 내부 구조가 복잡해질 때마다
+        # (사용자가 USD를 반복 수정하면서 계속 바뀜, 2026-07-27) 아주 살짝만
+        # 겹쳐도 PhysX가 깊은 침투로 오인해 박스를 포물선으로 튕겨 날려버리는
+        # 문제가 반복됐다. 정확한 안착 높이를 완벽히 맞추려 애쓰는 대신,
+        # 확실히 위쪽 빈 공간에서 스폰해 자유낙하로 자연스럽게 안착시킨다 -
+        # 어차피 update()의 picking_position은 박스의 실시간 위치를 그대로
+        # 읽으므로(_read_box_pose) 스폰 높이가 정확할 필요가 없다.
+        spawn_pos = spawn_pos + np.array([0.0, 0.0, 0.05])
         # pallet 바닥의 실제 회전(yaw)에 박스도 맞춰 돌려서 스폰한다 - 그래야
         # world 축 기준으로는 넓어 보이는 마름모꼴 바닥 안에 박스가 실제로도
         # 딱 들어간다(위 _pallet_yaw 설명 참고).
@@ -571,6 +594,53 @@ class AmrArmController:
             mass=1.1,
         )
         return prim_path
+
+    # -----------------------------------------------------------------
+    # 내부 helper - 운반 중 자세 보정(용접 시점까지 기다리지 않고 미리 각도를 맞춤)
+    # -----------------------------------------------------------------
+
+    def _compute_grasp_rel_rot(self) -> Gf.Quatd:
+        """흡착된 그 순간, 박스가 그리퍼에 대해 어떤 상대 회전으로 붙었는지
+        기록해둔다(trigger_surface_gripper.close()의 local_rot1과 동일한
+        관례: rel_rot = box_rot^-1 * gripper_rot, 즉 gripper_rot = box_rot *
+        rel_rot). 박스는 그리퍼에 강체로 고정돼 있으니, 이후 그리퍼의 목표
+        회전을 바꾸면 이 관계를 그대로 유지한 채 박스도 같이 돈다 - 이 값을
+        알아야 "그리퍼가 몇 도를 향해야 박스가 원하는 각도가 되는지"를
+        역산할 수 있다."""
+        stage = omni.usd.get_context().get_stage()
+        gripper_mat = UsdGeom.Xformable(
+            stage.GetPrimAtPath(self._gripper_base_path)
+        ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        box_mat = UsdGeom.Xformable(
+            stage.GetPrimAtPath(self._current_box_prim_path)
+        ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        gripper_rot = gripper_mat.ExtractRotationQuat()
+        box_rot = box_mat.ExtractRotationQuat()
+        return box_rot.GetInverse() * gripper_rot
+
+    def _compute_carry_orientation(self) -> np.ndarray:
+        """운반 중(놓기 전) 미리 목표 각도로 그리퍼를 돌려서, 용접되는
+        순간까지 기다리지 않고도 박스가 눈으로 보기에 반듯하게 옮겨지도록
+        한다(2026-07-27, 사용자 요청 - "운반 중에 각도 보정하면 안 돼?").
+        흡착 직후 바로 틀면 그 반동이 흡착 순간의 충격과 겹칠 수 있어서,
+        "놓으러 이동하는" phase(event>=5, RMPflow event 5=목표 xy로 이동)
+        부터만 적용한다. pick_to_storage(임시 보관함에 내려놓는 구간)만
+        보정하고, place_from_storage(랙에 최종 배치)는 각도 요구사항이
+        없어서 그대로 둔다."""
+        default = np.array([1.0, 0.0, 0.0, 0.0])
+        if (
+            self._grasp_rel_rot is None
+            or self._phase != "pick_to_storage"
+            or self._controller.get_current_event() < 5
+        ):
+            return default
+        stage = omni.usd.get_context().get_stage()
+        storage_mat = UsdGeom.Xformable(
+            stage.GetPrimAtPath(self._storage_box_path)
+        ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        target_rot = storage_mat.ExtractRotationQuat()
+        gripper_rot_new = target_rot * self._grasp_rel_rot
+        return np.array([gripper_rot_new.GetReal(), *gripper_rot_new.GetImaginary()])
 
     # -----------------------------------------------------------------
     # 내부 helper - StorageBox 용접(gripper와 별개, 슬롯<->박스 고정)
@@ -591,13 +661,22 @@ class AmrArmController:
         storage_mat = UsdGeom.Xformable(storage_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         box_mat = UsdGeom.Xformable(box_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         rel_local = storage_mat.GetInverse().Transform(box_mat.ExtractTranslation())
-        rel_rot = storage_mat.ExtractRotationQuat().GetInverse() * box_mat.ExtractRotationQuat()
+        # 박스는 pick pallet의 45도 회전에 맞춰 스폰되고(_spawn_pick_box의
+        # _pallet_yaw 참고) 그 각도를 그대로 들고 옮겨오는데, StorageBox
+        # 선반은 챗시에 맞춰 축 정렬돼 있어서 실제 회전(box_mat의 회전)을
+        # 그대로 용접하면 박스가 선반 위에 삐딱하게(대각선으로) 얹힌
+        # 것처럼 보인다(2026-07-27, 사용자 스크린샷 확인). 위치(rel_local)는
+        # 실제 도착 지점을 그대로 쓰되, 회전은 무시하고 선반과 축을 맞춘다
+        # (identity) - 어차피 흡착 관절(GraspJoint)이 팔-박스 상대 회전을
+        # 따로 잡고 있어서 여기서 박스만 시각적으로 반듯하게 재정렬해도
+        # 흡착 자체엔 영향 없다.
+        rel_rot = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
 
         joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
         joint.CreateBody0Rel().SetTargets([Sdf.Path(self._storage_box_path)])
         joint.CreateBody1Rel().SetTargets([Sdf.Path(box_prim_path)])
         joint.CreateLocalPos0Attr().Set(Gf.Vec3f(rel_local))
-        joint.CreateLocalRot0Attr().Set(Gf.Quatf(rel_rot))
+        joint.CreateLocalRot0Attr().Set(rel_rot)
         joint.GetPrim().GetAttribute("physics:excludeFromArticulation").Set(True)
 
     def _unweld_slot(self, slot_index: int) -> None:
@@ -654,6 +733,7 @@ class AmrArmController:
         self._gripper.post_reset()
         self._contact_seen = False
         self._grasp_confirmed = False
+        self._grasp_rel_rot = None
         self._welded_this_rep = False
         self._cycle_target = self._compute_slot_target(self._current_slot_index)
         self._phase = "pick_to_storage"
@@ -690,6 +770,7 @@ class AmrArmController:
         self._gripper.post_reset()
         self._contact_seen = False
         self._grasp_confirmed = False
+        self._grasp_rel_rot = None
         self._cycle_target = self._nearest_point_on_pallet_top(target_pallet_path)
         self._phase = "place_from_storage"
         return True
@@ -722,14 +803,41 @@ class AmrArmController:
             self._contact_seen = True
         pick_offset_z = 0.0 if self._contact_seen else PICK_DESCEND_OFFSET_Z
         if self._gripper.is_closed():
+            if not self._grasp_confirmed:
+                self._grasp_rel_rot = self._compute_grasp_rel_rot()
             self._grasp_confirmed = True
+
+        # base PickPlaceController는 event가 0/1일 때만 self._h0(상승 시작
+        # 기준 높이)를 picking_position 기준으로 갱신하고, 그 뒤(정지 대기
+        # event2/grasp event3)엔 그 값을 그대로 얼려서 쓴다. 그런데 접촉이
+        # 감지된 그 프레임 이후로도 박스가 마저 가라앉으며 실제 높이가
+        # 계속 바뀌는데, h0는 이미 얼어붙은 값이라 실제 위치와 최대 5cm
+        # 넘게 어긋난다(2026-07-27, 사용자 확인 - 상승 시작할 때 그리퍼가
+        # 잠깐 박스 안으로 파고들었다 올라오는 것으로 관찰됨. h0가 박스보다
+        # 높으면 반대로 뜬 채로 시작해버림 - 실측: 1.4877 vs 1.4359). event4
+        # (상승) 시작 전까지 h0을 박스의 실시간 높이로 계속 맞춰서, 상승이
+        # 실제 안착 높이에서 정확히 시작하게 한다.
+        if self._controller.get_current_event() in (2, 3):
+            self._controller._h0 = float(source_pos[2])
+
+        # 놓는 쪽(event7)도 같은 문제가 있다 - event8(놓은 뒤 상승)의 시작
+        # 높이는 self._cycle_target[2](명목상의 목표 높이)를 그대로 쓰는데,
+        # 실제로 팔이 도달/정착한 높이가 그 명목값과 다르면(선반이나 랙
+        # 표면에 걸쳐서 정확히 못 맞추는 경우 등) event8 시작 순간 그리퍼가
+        # 명목 높이로 순간 이동했다가 올라가면서 박스를 파고드는 것처럼
+        # 보인다(2026-07-27, 사용자 확인 - "place하고... 그리퍼가 상자
+        # 안으로 들어갔다가 올라옴"). event7 동안 cycle_target의 높이를
+        # 박스의 실시간 높이로 계속 맞춰서, event8이 실제 안착 높이에서
+        # 정확히 시작하게 한다.
+        if self._controller.get_current_event() == 7:
+            self._cycle_target[2] = float(source_pos[2])
 
         actions = self._controller.forward(
             picking_position=source_pos,
             placing_position=self._cycle_target,
             current_joint_positions=current_joints,
             end_effector_offset=np.array([0.0, 0.0, pick_offset_z]),
-            end_effector_orientation=np.array([1.0, 0.0, 0.0, 0.0]),
+            end_effector_orientation=self._compute_carry_orientation(),
         )
         self._robot.apply_action(self._clamp_action(actions, current_joints))
 
