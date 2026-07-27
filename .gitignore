@@ -9,9 +9,15 @@ __pycache__/
 .claude/
 .vscode/
 *.urdf
-*.png
 *.usda
 *.mdl
+*.png
 *.jpg
 *.jpeg
-*.usdz
+*.npy
+*.json
+*.txt
+*.csv
+*.zip
+runs/
+dataset_*/

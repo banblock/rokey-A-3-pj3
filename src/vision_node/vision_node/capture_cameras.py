@@ -21,7 +21,7 @@ class CameraCapture(Node):
     def __init__(self):
         super().__init__('camera_capture')
         self.bridge = CvBridge()
-        self.saved = {'cam1': False, 'cam2': False}
+        self.saved = {'cam1': False, 'cam2': False, 'cam3': False}
 
         image_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -37,7 +37,10 @@ class CameraCapture(Node):
             Image, '/d455_2/color/image_raw',
             lambda msg: self.save_image(msg, 'cam2'), image_qos,
         )
-
+        self.create_subscription(
+            Image, '/d455_3/color/image_raw',
+            lambda msg: self.save_image(msg, 'cam3'), image_qos,
+        )
         self.get_logger().info('Waiting for camera images...')
 
     def save_image(self, msg, cam_name):
@@ -45,12 +48,20 @@ class CameraCapture(Node):
             return
 
         try:
-            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            path = f'/home/rokey/dataset/{cam_name}_{current_time}_captured.png'
-            cv2.imwrite(path, cv_image)
-            self.saved[cam_name] = True
-            self.get_logger().info(f'{cam_name} saved: {path}')
+            if cam_name == 'cam3':
+                current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                path = f'/home/rokey/dataset_bottom/{cam_name}_{current_time}_captured.png'
+                cv2.imwrite(path, cv_image)
+                self.saved[cam_name] = True
+                self.get_logger().info(f'{cam_name} saved: {path}')
+            else:
+                current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+                path = f'/home/rokey/dataset2/{cam_name}_{current_time}_captured.png'
+                cv2.imwrite(path, cv_image)
+                self.saved[cam_name] = True
+                self.get_logger().info(f'{cam_name} saved: {path}')
         except Exception as e:
             self.get_logger().error(f'{cam_name} failed: {e}')
 
