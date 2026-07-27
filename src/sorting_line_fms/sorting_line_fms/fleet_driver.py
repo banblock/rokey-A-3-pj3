@@ -161,9 +161,6 @@ class FleetDriver(Node):
         self.status_pub = self.create_publisher(String, "/amr/status", 10)
         self.create_subscription(String, "/fms/commands", self._on_command, _COMMAND_QOS)
         self.create_subscription(Bool, "/fms/emergency_stop", self._on_emergency_stop, _COMMAND_QOS)
-        # AGV 마커(AprilTag) 위치 보정 — agv_marker_localizer.py가 마커를 인식하면
-        # 여기로 "그 마커가 있는 노드의 알려진 좌표"를 보낸다(_on_pose_correction 참고).
-        self.create_subscription(String, "/fms/pose_correction", self._on_pose_correction, 10)
 
         for robot_id in self.ROBOT_HOME_NODE:
             self._ensure_robot(robot_id)
@@ -214,28 +211,6 @@ class FleetDriver(Node):
         robot["y"] = robot["spawn_y"] + pos.x * sin_yaw + pos.y * cos_yaw
         robot["yaw"] = _normalize_angle(spawn_yaw + _yaw_from_quaternion(msg.pose.pose.orientation))
         robot["has_odom"] = True
-
-    def _on_pose_correction(self, msg):
-        data = json.loads(msg.data)
-        robot_id = data["robot_id"]
-        robot = self.robots.get(robot_id)
-        if robot is None:
-            return
-        # robot["x"]/["y"]는 매 오도메트리 콜백마다 spawn_x/spawn_y 기준으로 다시
-        # 계산되는 파생값이라(_on_odom 참고), 여기서 x/y를 직접 덮어써도 다음
-        # 오도메트리가 오는 순간 그대로 원래 값으로 되돌아간다 — 실제로 보정을
-        # "붙잡아두려면" 변환의 기준점인 spawn_x/spawn_y를 옮겨야 한다. 지금
-        # 위치와 보정된 위치의 차이(Δ)만큼 스폰 오프셋을 밀어주면, 다음
-        # 오도메트리 계산부터 그 Δ가 그대로 반영된 채 이어진다.
-        dx = data["x"] - robot["x"]
-        dy = data["y"] - robot["y"]
-        robot["spawn_x"] += dx
-        robot["spawn_y"] += dy
-        robot["x"] = data["x"]
-        robot["y"] = data["y"]
-        self.get_logger().info(
-            f"[{robot_id}] 마커 보정 적용 ({data.get('node_id')}) — Δ=({dx:+.3f}, {dy:+.3f})"
-        )
 
     def _on_emergency_stop(self, msg):
         self._emergency_stopped = msg.data
