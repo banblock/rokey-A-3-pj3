@@ -7,12 +7,13 @@ enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
 import math
+import os
 
 import numpy as np
 import omni.usd
 import omni.graph.core as og
 import usdrt.Sdf
-from pxr import UsdLux
+from pxr import Gf, Sdf, UsdGeom, UsdLux, UsdShade
 
 from isaacsim.core.api import World
 from isaacsim.core.api.objects import VisualCuboid, VisualCylinder
@@ -21,6 +22,7 @@ from isaacsim.core.prims import SingleXFormPrim
 from isaacsim.storage.native import get_assets_root_path
 
 from fleet_config import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
+from marker_config import MARKER_SIZE_M, build_marker_maps
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
@@ -124,6 +126,71 @@ def build_ros2_diffdrive_graph(robot_id, chassis_prim_path):
     return graph
 
 
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  C-2. AGV 마커(AprilTag) 인식용 하향 카메라                          ║
+# ╚══════════════════════════════════════════════════════════════╝
+# 실물에서는 각 Nova Carter가 이 카메라 스트림을 자기 온보드 컴퓨트(Jetson
+# Orin)에서 직접 처리하지만, 시뮬레이션에는 로봇별로 분리된 물리 컴퓨트가
+# 없다(2026-07-24 논의) — 그래서 검출 자체는 이 씬이 아니라 별도 ROS2 노드
+# (agv_marker_localizer.py)가 담당하고, 이 씬은 "카메라 이미지를 토픽으로
+# 내보내는 것"까지만 한다. 두 컴퓨터(시뮬레이션용 / FMS용) 구조에서
+# agv_marker_localizer.py는 시뮬레이션 컴퓨터 쪽에서 띄우는 걸 전제로 한다 —
+# 그래야 원본 카메라 영상이 네트워크를 안 넘어가고, 가벼운 보정값(JSON)만
+# fleet_driver.py가 있는 FMS 컴퓨터로 건너간다.
+MARKER_CAM_HEIGHT_M = 0.3  # 섀시 위 카메라 높이(실측 후 조정 예정)
+
+
+def spawn_marker_camera(robot_id, chassis_prim_path, viewport_id):
+    """chassis_prim_path 밑에 바닥을 내려다보는 카메라를 붙이고 ROS2로 퍼블리시한다.
+    viewport_id는 로봇마다 달라야 한다(IsaacCreateViewport가 서로 겹치면 안 됨)."""
+    camera_path = f"{chassis_prim_path}/MarkerCamera"
+    camera_prim = UsdGeom.Camera(stage.DefinePrim(camera_path, "Camera"))
+    xform_api = UsdGeom.XformCommonAPI(camera_prim)
+    xform_api.SetTranslate(Gf.Vec3d(0.0, 0.0, MARKER_CAM_HEIGHT_M))
+    # 카메라 기본(무회전) 방향이 로컬 -Z(아래)라 2_sneaker_camera.py처럼 무회전으로
+    # 두면 바로 바닥을 본다 — 여기서는 섀시에 붙어서 섀시 자세를 그대로 따라가므로
+    # 섀시가 수평이면 이대로 충분하다(엔진에서 실제로 바닥이 잡히는지 확인 필요).
+    camera_prim.GetClippingRangeAttr().Set(Gf.Vec2f(0.05, 2.0))
+    camera_prim.GetHorizontalApertureAttr().Set(20.955)
+    camera_prim.GetFocalLengthAttr().Set(9.5)
+
+    graph_path = f"/World/{robot_id}/ROS_MarkerCamera"
+    keys = og.Controller.Keys
+    (graph, _, _, _) = og.Controller.edit(
+        {
+            "graph_path": graph_path,
+            "evaluator_name": "push",
+            "pipeline_stage": og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND,
+        },
+        {
+            keys.CREATE_NODES: [
+                ("OnTick", "omni.graph.action.OnTick"),
+                ("createViewport", "isaacsim.core.nodes.IsaacCreateViewport"),
+                ("getRenderProduct", "isaacsim.core.nodes.IsaacGetViewportRenderProduct"),
+                ("setCamera", "isaacsim.core.nodes.IsaacSetCameraOnRenderProduct"),
+                ("cameraHelperRgb", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+            ],
+            keys.CONNECT: [
+                ("OnTick.outputs:tick", "createViewport.inputs:execIn"),
+                ("createViewport.outputs:execOut", "getRenderProduct.inputs:execIn"),
+                ("createViewport.outputs:viewport", "getRenderProduct.inputs:viewport"),
+                ("getRenderProduct.outputs:execOut", "setCamera.inputs:execIn"),
+                ("getRenderProduct.outputs:renderProductPath", "setCamera.inputs:renderProductPath"),
+                ("setCamera.outputs:execOut", "cameraHelperRgb.inputs:execIn"),
+                ("getRenderProduct.outputs:renderProductPath", "cameraHelperRgb.inputs:renderProductPath"),
+            ],
+            keys.SET_VALUES: [
+                ("createViewport.inputs:viewportId", viewport_id),
+                ("cameraHelperRgb.inputs:frameId", f"{robot_id}_marker_cam"),
+                ("cameraHelperRgb.inputs:topicName", f"/{robot_id}/marker_cam/image_raw"),
+                ("cameraHelperRgb.inputs:type", "rgb"),
+                ("setCamera.inputs:cameraPrim", [usdrt.Sdf.Path(camera_path)]),
+            ],
+        },
+    )
+    return graph
+
+
 # 로봇 자체(섀시)에 색을 입히지 않고, 위에 종류별 색깔 비콘을 따로 띄운다 —
 # Nova Carter는 이미 자체 머티리얼이 있는 복잡한 참조 에셋이라 내부 메시의
 # 재질을 직접 바꾸는 건 실패 위험이 크다. 비콘은 매 시뮬레이션 스텝마다
@@ -140,12 +207,13 @@ _BEACON_HEIGHT_OFFSET_M = 0.5
 _robot_chassis_prims = {}
 _robot_beacons = {}
 
-for _robot_id, _home_node in ROBOT_HOME_NODE.items():
+for _viewport_id, (_robot_id, _home_node) in enumerate(ROBOT_HOME_NODE.items()):
     _home_pos = list(NODE_GRAPH[_home_node]["position"])
     _home_yaw = robot_spawn_yaw(_robot_id)
     _prim_path = f"/World/{_robot_id}"
     spawn_asset(NOVA_CARTER_USD, _prim_path, position=_home_pos, yaw=_home_yaw)
     build_ros2_diffdrive_graph(_robot_id, chassis_prim_path=f"{_prim_path}/chassis_link")
+    spawn_marker_camera(_robot_id, chassis_prim_path=f"{_prim_path}/chassis_link", viewport_id=_viewport_id)
     print(
         f"[스폰] {_robot_id} (담당 종류={ROBOT_SHOE_TYPE[_robot_id]}) @ {_home_node} {_home_pos} "
         f"yaw={math.degrees(_home_yaw):.0f}도"
@@ -223,6 +291,74 @@ for _node_name, _node_data in NODE_GRAPH.items():
             color=_color,
         )
     world.scene.add(marker)
+
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  E. AGV 마커(AprilTag) 배치 — 위 D의 색깔 마커는 카메라가 ID를 읽을 수  ║
+# ║     없는 단색 도형이라(비트 패턴 없음) 실제 위치추정용으로는 못 쓴다.   ║
+# ║     여기서는 generate_markers.py가 미리 만들어둔 실제 태그 이미지를    ║
+# ║     텍스처로 입힌 평면을 정밀도가 중요한 지점(픽업/랙)에만 깐다.        ║
+# ╚══════════════════════════════════════════════════════════════╝
+MARKER_IMAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markers")
+
+
+def _create_textured_marker_plane(prim_path, position, image_path, size_m):
+    """position(바닥 위 살짝) 지점에 image_path 텍스처를 입힌 정사각 평면을 만든다.
+    UsdPreviewSurface + UsdUVTexture 표준 조합 — 이 컴퓨터엔 Isaac Sim이 없어
+    실행 검증은 못 했으니, 처음 띄울 때 텍스처가 제대로 보이는지 확인 필요."""
+    plane = UsdGeom.Mesh.Define(stage, prim_path)
+    half = size_m / 2.0
+    plane.CreatePointsAttr([
+        Gf.Vec3f(-half, -half, 0), Gf.Vec3f(half, -half, 0),
+        Gf.Vec3f(half, half, 0), Gf.Vec3f(-half, half, 0),
+    ])
+    plane.CreateFaceVertexCountsAttr([4])
+    plane.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    plane.CreateExtentAttr([(-half, -half, 0), (half, half, 0)])
+    plane.CreateNormalsAttr([Gf.Vec3f(0, 0, 1)] * 4)
+
+    texcoords = UsdGeom.PrimvarsAPI(plane).CreatePrimvar(
+        "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.varying
+    )
+    texcoords.Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+
+    material_path = f"{prim_path}/Material"
+    material = UsdShade.Material.Define(stage, material_path)
+    shader = UsdShade.Shader.Define(stage, f"{material_path}/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.9)
+
+    tex_shader = UsdShade.Shader.Define(stage, f"{material_path}/Texture")
+    tex_shader.CreateIdAttr("UsdUVTexture")
+    tex_shader.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(image_path)
+    tex_shader.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("clamp")
+    tex_shader.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("clamp")
+    tex_shader.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+
+    diffuse_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+    diffuse_input.ConnectToSource(tex_shader.ConnectableAPI(), "rgb")
+
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI(plane).Bind(material)
+
+    xform_api = UsdGeom.XformCommonAPI(plane)
+    xform_api.SetTranslate(Gf.Vec3d(position[0], position[1], 0.005))  # 바닥 위 살짝(그라운드와 Z-fighting 방지)
+    return plane
+
+
+_marker_id_by_node, _ = build_marker_maps(NODE_GRAPH)
+for _marker_node_name, _marker_id in _marker_id_by_node.items():
+    _marker_image_path = os.path.join(MARKER_IMAGE_DIR, f"{_marker_node_name}.png")
+    if not os.path.exists(_marker_image_path):
+        print(f"[경고] {_marker_node_name}용 마커 이미지 없음({_marker_image_path}) — generate_markers.py 먼저 실행 필요")
+        continue
+    _create_textured_marker_plane(
+        prim_path=f"/World/AgvMarkers/{_marker_node_name}",
+        position=NODE_GRAPH[_marker_node_name]["position"],
+        image_path=_marker_image_path,
+        size_m=MARKER_SIZE_M,
+    )
+print(f"[AGV 마커] {len(_marker_id_by_node)}개 지점에 AprilTag 평면 배치 완료")
 
 
 world.scene.add_default_ground_plane()
