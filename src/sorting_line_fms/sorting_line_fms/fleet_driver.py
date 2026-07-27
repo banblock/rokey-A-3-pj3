@@ -41,9 +41,21 @@ if _SHARE_DIR not in sys.path:
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
+
+# fms_node.py가 /fms/commands·/fms/emergency_stop을 발행할 때 쓰는 QoS와 반드시
+# 똑같이 맞춰야 한다 — TRANSIENT_LOCAL이라야, 이 노드(구독자)가 FMS 노드보다
+# 늦게(launch에서 지연 시작 등) 뜨더라도 그 사이 발행된 이동 명령/비상 정지를
+# 유실 없이 그대로 받는다.
+_COMMAND_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+)
 
 # NODE_GRAPH/ROBOT_HOME_NODE/robot_spawn_yaw는 모듈 상단에서 바로 import하지
 # 않고, __init__에서 config_module 파라미터로 받은 이름으로 동적 import한다 —
@@ -79,8 +91,22 @@ STOP_HOLD_SEC = 0.5
 def _is_pickup_area_node(node_id):
     """PICKUP_X, PICKUP_WAIT_X, PICKUP_WAIT2_X... 처럼 로봇이 실제로 완전히
     멈춰서 다른 로봇과 자리를 주고받아야 하는 노드인지 판정한다. PICKUP_X_APPROACH나
-    본선 세분화 칸("__" 포함)은 진짜 정지 지점이 아니라서 제외한다."""
-    return node_id is not None and node_id.startswith("PICKUP_") and "APPROACH" not in node_id and "__" not in node_id
+    본선 세분화 칸("__" 포함)은 진짜 정지 지점이 아니라서 제외한다.
+
+    crossing_test_config.py처럼 픽업 개념이 아예 없는 그래프도 있다 — 거기서도
+    완전 정지가 필요한 지점(R1_HOME/R1_FAR/R2_HOME/R2_FAR)이 있는데 PICKUP_
+    접두사가 없어서 안 걸렸었다. 그 그래프의 노드 이름 규칙("_HOME"/"_FAR"로
+    끝남)도 같이 인정한다 — 운영 그래프(fleet_config 계열)엔 이 접미사를 쓰는
+    노드가 없어서 서로 겹칠 일은 없다."""
+    if node_id is None:
+        return False
+    if "__" in node_id:
+        return False  # 본선 세분화 칸은 어떤 그래프든 진짜 정지 지점이 아님
+    if node_id.startswith("PICKUP_") and "APPROACH" not in node_id:
+        return True
+    if node_id.endswith("_HOME") or node_id.endswith("_FAR"):
+        return True
+    return False
 
 
 def _yaw_from_quaternion(q):
@@ -109,9 +135,15 @@ class FleetDriver(Node):
         self.robot_spawn_yaw = config.robot_spawn_yaw
 
         self.robots = {}  # robot_id -> {x, y, yaw, has_odom, target_xy, target_node, cmd_pub}
+        # fms_node.py가 교착 반복(DEADLOCK_NOTIFY_THRESHOLD회 이상)을 감지하면
+        # /fms/emergency_stop으로 전체 정지를 방송한다 — 이 로봇의 종류/그래프와
+        # 무관하게 여기서 관리하는 모든 로봇을 즉시 멈추고, 해제({"stop": false})
+        # 전까지는 새 이동 명령이 와도(_on_command가 target을 갱신해도) 무시한다.
+        self._emergency_stopped = False
 
         self.status_pub = self.create_publisher(String, "/amr/status", 10)
-        self.create_subscription(String, "/fms/commands", self._on_command, 10)
+        self.create_subscription(String, "/fms/commands", self._on_command, _COMMAND_QOS)
+        self.create_subscription(Bool, "/fms/emergency_stop", self._on_emergency_stop, _COMMAND_QOS)
 
         for robot_id in self.ROBOT_HOME_NODE:
             self._ensure_robot(robot_id)
@@ -163,6 +195,15 @@ class FleetDriver(Node):
         robot["yaw"] = _normalize_angle(spawn_yaw + _yaw_from_quaternion(msg.pose.pose.orientation))
         robot["has_odom"] = True
 
+    def _on_emergency_stop(self, msg):
+        self._emergency_stopped = msg.data
+        if self._emergency_stopped:
+            self.get_logger().error("[비상 정지] 전체 AMR 정지 (사유는 fms_node 로그 참고)")
+            for robot in self.robots.values():
+                robot["cmd_pub"].publish(Twist())
+        else:
+            self.get_logger().warn("[비상 정지 해제] 이동 재개")
+
     def _on_command(self, msg):
         data = json.loads(msg.data)
         robot_id = data["robot_id"]
@@ -175,6 +216,15 @@ class FleetDriver(Node):
         self.robots[robot_id]["target_is_final"] = data.get("is_final_hop", True)
 
     def _control_tick(self):
+        if self._emergency_stopped:
+            # 매 tick 0 속도를 반복 전송한다 — _on_emergency_stop에서 한 번만
+            # 보내면 STOP_HOLD_SEC 로직과 마찬가지로 PhysX 잔여 관성이 안 죽어서
+            # 계속 미끄러질 수 있다. target_xy/state는 건드리지 않고 그대로
+            # 두므로, 해제되면 원래 향하던 목표로 자연스럽게 이어서 이동한다.
+            for robot in self.robots.values():
+                robot["cmd_pub"].publish(Twist())
+            return
+
         now = self.get_clock().now()
         for robot_id, robot in self.robots.items():
             if robot["stop_until"] is not None:

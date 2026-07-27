@@ -118,7 +118,7 @@ NODE_GRAPH = {
     "RackA_240_detour":   {"position": (-4.5, -6.7, 1.03), "neighbors": ["RackA_OUT"]},
     "RackA_OUT":     {"position": (-7.25, -4.3, 0.0), "neighbors": ["PICKUP_A_APPROACH"]},
     "PICKUP_A_APPROACH":    {"position": (-4.3, -2.33, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
-    "PICKUP_WAIT_A":    {"position": (3.1, -2.85, 1.03), "neighbors": ["PICKUP_A"]},
+    "PICKUP_WAIT_A":    {"position": (3.1, -2.9, 1.03), "neighbors": ["PICKUP_A"]},
     
 }
 

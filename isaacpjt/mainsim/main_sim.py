@@ -37,9 +37,9 @@ import omni.timeline
 from pxr import Usd
 
 from isaacsim.core.api import World
+from isaacsim.core.api.objects import VisualCuboid, VisualCylinder
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
-from isaacsim.storage.native import get_assets_root_path
 
 from fleet_config_test1 import (
     NODE_GRAPH,
@@ -59,15 +59,70 @@ WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
 WHEEL_JOINT_NAMES = ["joint_wheel_left", "joint_wheel_right"]
 
-_assets_root_path = get_assets_root_path()
-if _assets_root_path is None:
-    raise RuntimeError("Isaac Sim 기본 에셋 서버(Nucleus)에 연결할 수 없습니다.")
-NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd"
+NOVA_CARTER_USD = os.path.expanduser(
+    "~/cobot3_ws/isaacpjt/nova-carter/nova_carter_ur5e_surface_gripper.usd"
+)
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/demo0726_v2.usd"
+    "~/cobot3_ws/isaacpjt/demo0725/demo0725.usd"
 )
+
+# NODE_GRAPH 지점 시각화용 색상 — 노드 종류가 아니라 담당 신발 종류(A/B/C/D)로
+# 칠한다("이 노드를 이 로봇이 담당한다"는 게 색으로 바로 보이게).
+_ROBOT_TYPE_COLORS = {
+    "A": np.array([0.80, 0.20, 0.20]),  # 빨강
+    "B": np.array([0.85, 0.65, 0.13]),  # 노랑
+    "C": np.array([0.20, 0.70, 0.30]),  # 초록
+    "D": np.array([0.20, 0.40, 0.80]),  # 파랑
+}
+
+
+def _node_shoe_type(name):
+    for _t in SHOE_TYPES:
+        if name.startswith(f"PICKUP_WAIT_{_t}"):
+            return _t
+    for _t in SHOE_TYPES:
+        if name.startswith(f"PICKUP_{_t}"):
+            return _t
+    for _t in SHOE_TYPES:
+        if name.startswith(f"HUB_{_t}"):
+            return _t
+    for _t in SHOE_TYPES:
+        if name.startswith(f"Rack{_t}"):
+            return _t
+    return None
+
+
+def add_node_graph_markers(world):
+    """NODE_GRAPH의 각 지점을 바닥에 색칠된 정사각형(원기둥은 PICKUP_WAIT만)으로
+    표시한다. 물리/충돌 없음, 순수 디버그용 — 1_conveyor_sorter_env.py와 동일 로직."""
+    for _node_name, _node_data in NODE_GRAPH.items():
+        _node_type = _node_shoe_type(_node_name)
+        _color = _ROBOT_TYPE_COLORS.get(_node_type, np.array([0.6, 0.6, 0.6]))
+        _is_segment = "__" in _node_name
+        _is_pickup_wait = any(_node_name.startswith(f"PICKUP_WAIT_{_t}") for _t in SHOE_TYPES)
+        _size = 0.15 if _is_segment else 0.35
+        _pos = list(_node_data["position"])
+        _pos[2] = 1.01  # 바닥 위로 살짝 띄워서 그라운드 플레인과 Z-fighting 방지
+        if _is_pickup_wait:
+            marker = VisualCylinder(
+                prim_path=f"/World/GraphMarkers/{_node_name}",
+                name=f"marker_{_node_name}",
+                position=np.array(_pos),
+                radius=_size / 2.0,
+                height=0.02,
+                color=_color,
+            )
+        else:
+            marker = VisualCuboid(
+                prim_path=f"/World/GraphMarkers/{_node_name}",
+                name=f"marker_{_node_name}",
+                position=np.array(_pos),
+                scale=np.array([_size, _size, 0.02]),
+                color=_color,
+            )
+        world.scene.add(marker)
 
 
 def load_usd_stage(usd_path: str) -> Usd.Stage:
@@ -210,6 +265,8 @@ def main() -> None:
             simulation_app.update()
 
         world = World(stage_units_in_meters=1.0)
+
+        add_node_graph_markers(world)
 
         print("[World] reset")
         world.reset()
