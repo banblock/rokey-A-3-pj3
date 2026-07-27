@@ -568,15 +568,35 @@ class VisionNode(Node):
         obb = result.obb
         if obb is None or len(obb) == 0:
             self.get_logger().warn('cam3: shoe OBB not found')
+            self._publish_cam3_debug_image(cv_image)
             return None
 
         # confidence 가장 높은 것 하나만 쓴다 (한 번에 켤레 하나만 지나간다는 전제).
         best_idx = int(obb.conf.argmax())
-        w, h = float(obb.xywhr[best_idx][2]), float(obb.xywhr[best_idx][3])
+        cx, cy, w, h, r = [float(v) for v in obb.xywhr[best_idx]]
         length_px = max(w, h)
         size_mm = self._classify_size_mm(length_px)
         self.get_logger().info(f'cam3: length_px={length_px:.1f} -> size={size_mm}mm')
+
+        annotated = self._draw_obb(cv_image, cx, cy, w, h, r, f'{size_mm}mm ({length_px:.0f}px)')
+        self._publish_cam3_debug_image(annotated)
         return size_mm
+
+    def _publish_cam3_debug_image(self, image: np.ndarray):
+        img_msg = self.result_send_annotated(annotated=image)
+        self.pub_result_img3.publish(img_msg)
+        if self.save_debug_image:
+            debug_path = f'/home/rokey/debug_inference/debug_inference_cam3_{time.time()}.png'
+            cv2.imwrite(debug_path, image)
+
+    @staticmethod
+    def _draw_obb(image: np.ndarray, cx: float, cy: float, w: float, h: float, r: float, label: str) -> np.ndarray:
+        out = image.copy()
+        box = cv2.boxPoints(((cx, cy), (w, h), np.degrees(r))).astype(int)
+        cv2.drawContours(out, [box], 0, (0, 255, 0), 2)
+        cv2.putText(out, label, (int(cx), max(0, int(cy) - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        return out
 
     # ------------------------------------------------------------------
     # def _judge_pair(self, left: dict, right: dict) -> dict:
