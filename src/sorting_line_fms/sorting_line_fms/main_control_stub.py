@@ -16,7 +16,7 @@ AUTO_TRIGGER_INTERVAL_SEC = 3.0
 # 소/중/대 경계(SIZE_THRESHOLDS_MM=(255,275))에 걸치는 실측 사이즈 그대로 사용
 SHOE_LENGTH_CHOICES_MM = [240, 260, 280]
 SHOE_TYPE_LABELS = ["A", "B", "C", "D"]
-SHOES_NUM_LIST = [0]  # 이 목록 길이(2개)만큼만 보내고 끝낸다 — 무한 반복 아님
+SHOES_NUM_LIST = [0, 0]  # 이 목록 길이(2개)만큼만 보내고 끝낸다 — 무한 반복 아님
 
 class MainControlStub(Node):
 
@@ -48,7 +48,7 @@ class MainControlStub(Node):
             return
         msg = PickupList()
         msg.place = shoes_num
-        msg.shoes = [280]
+        msg.shoes = [280,280, 260, 260, 240]
         # msg.place = random.randint(0, len(SHOE_TYPE_LABELS) - 1)
         # msg.shoes = [random.choice(SHOE_LENGTH_CHOICES_MM) for _ in range(5)]
         self.pub.publish(msg)

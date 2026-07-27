@@ -18,7 +18,6 @@ from isaacsim.core.api import World
 from isaacsim.core.api.objects import VisualCuboid, VisualCylinder
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.prims import SingleXFormPrim
-from isaacsim.storage.native import get_assets_root_path
 
 from fleet_config_test1 import NODE_GRAPH, ROBOT_HOME_NODE, ROBOT_SHOE_TYPE, SHOE_TYPES, robot_spawn_yaw
 
@@ -41,10 +40,7 @@ WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
 WHEEL_JOINT_NAMES = ["joint_wheel_left", "joint_wheel_right"]
 
-_assets_root_path = get_assets_root_path()
-if _assets_root_path is None:
-    raise RuntimeError("Isaac Sim 기본 에셋 서버(Nucleus)에 연결할 수 없습니다.")
-NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd"
+NOVA_CARTER_USD = "/home/rokey/cobot3_ws/isaacpjt/nova-carter/nova_carter_ur5e_surface_gripper.usd"
 
 def spawn_asset(usd_path, prim_path, position, yaw=0.0):
     add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)

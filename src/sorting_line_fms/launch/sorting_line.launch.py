@@ -59,7 +59,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "use_main_control_stub",
-            default_value="false",
+            default_value="true",
             description="무작위 배치를 주기적으로 던져주는 임시 메인 컨트롤 스텁을 같이 띄울지 여부 — 실제 메인 컨트롤 노드가 생기면 false로",
         ),
         fms_node,

@@ -82,7 +82,9 @@ NODE_GRAPH = {
     # 1. 픽업 지점 — 실제 컨베이어는 아직 단일 벨트/단일 픽업 지점이라
     # 아래 좌표는 임시값이다 — 종류별 벨트/분기 배치가 실제로 정해지면
     # 실측치로 교체해야 한다.
-    "PICKUP_A":     {"position": (3.65, -2.65, 1.03), "neighbors": ["HUB_A"]},
+    "PICKUP_A":     {"position": (5.02, -0.98, 1.03), "neighbors": ["HUB_A_APPROACH"]},
+
+    "HUB_A_APPROACH" :  {"position": (7.02, 1.02, 1.03), "neighbors": ["HUB_A"]},
 
     # 2. 종류별 전용 경유지. HUB의 Y가 랙 안쪽(280/260/240)보다 더 크다(더
     # "깊다") — 즉 로봇은 픽업에서 나와 랙 구역 중 가장 깊은 지점(HUB)까지
@@ -90,7 +92,14 @@ NODE_GRAPH = {
     # 바로 복귀한다. HUB→랙 진입 구간은 이미 세분화(_subdivide_edge)돼 있어
     # 길어져도 안전하지만, 복귀 구간은 세분화가 안 돼 있어서 짧게 유지하는
     # 쪽이 유리하다.
-    "HUB_A":        {"position": (-5.65, -10.0, 1.03), "neighbors": ["RackA_280", "RackA_280_detour"]},
+    "HUB_A":        {"position": (7.02, -4.3, 1.03), "neighbors": ["RackA_280", "HUB_A_detour"]},
+
+    # 2.5. 우회(detour) 통로 전용 허브 — 근접 통로의 HUB_A와 대칭되는 지점.
+    # HUB_A에서 근접(RackA_280)과 우회(HUB_A_detour) 두 갈래로 갈라진 뒤, 우회
+    # 쪽은 이 노드를 거쳐 detour 레인 Y(근접보다 2.4m 더 안쪽)로 이동한 다음
+    # RackA_280_detour로 들어간다 — HUB_A_APPROACH가 근접 진입 전 굴절점 역할을
+    # 하는 것과 같은 구조를 우회 쪽에도 그대로 만든 것.
+    "HUB_A_detour": {"position": (7.02, -6.7, 1.03), "neighbors": ["RackA_280_detour"]},
 
     # 3. 랙 A. 근접/detour는 두 개의 완전히 분리된 통로. 신발은 항상
     # 280→260→240 순서로 내려놓는다(사용자 지정). 두 통로가 같은 노드를
@@ -101,15 +110,15 @@ NODE_GRAPH = {
     # 무시하므로 실제로는 같은 지점이었다 — 사이즈별로 Y(랙 안쪽 깊이)를
     # 갈라 물리적으로도 분리했고, detour 통로는 아예 다른 X대(근접 통로 옆,
     # 중심에서 바깥 방향으로 0.6m)를 써서 두 직선이 좌우로 나란히 떨어지게 했다.
-    "RackA_280":       {"position": (-5.65, -6.0, 1.03), "neighbors": ["RackA_260"]},
-    "RackA_260":       {"position": (-5.65, -2.53, 1.03), "neighbors": ["RackA_240"]},
-    "RackA_240":       {"position": (-5.65, 2.09, 1.03), "neighbors": ["RackA_OUT"]},
-    "RackA_280_detour":   {"position": (-9.0, -6.0, 1.03), "neighbors": ["RackA_260_detour"]},
-    "RackA_260_detour":   {"position": (-9.0, -2.53, 1.03), "neighbors": ["RackA_240_detour"]},
-    "RackA_240_detour":   {"position": (-9.0, 2.09, 1.03), "neighbors": ["RackA_OUT"]},
-    "RackA_OUT":     {"position": (-5.65, 5.99, 0.0), "neighbors": ["PICKUP_A_APPROACH"]},
-    "PICKUP_A_APPROACH":    {"position": (-4.0, 5.99, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
-    "PICKUP_WAIT_A":    {"position": (-4.0, -2.65, 1.03), "neighbors": ["PICKUP_A"]},
+    "RackA_280":       {"position": (2.5, -4.3, 1.03), "neighbors": ["RackA_260"]},
+    "RackA_260":       {"position": (-1.0, -4.3, 1.03), "neighbors": ["RackA_240"]},
+    "RackA_240":       {"position": (-4.5, -4.3, 1.03), "neighbors": ["RackA_OUT"]},
+    "RackA_280_detour":   {"position": (2.5, -6.7, 1.03), "neighbors": ["RackA_260_detour"]},
+    "RackA_260_detour":   {"position": (-1.0, -6.7, 1.03), "neighbors": ["RackA_240_detour"]},
+    "RackA_240_detour":   {"position": (-4.5, -6.7, 1.03), "neighbors": ["RackA_OUT"]},
+    "RackA_OUT":     {"position": (-7.25, -4.3, 0.0), "neighbors": ["PICKUP_A_APPROACH"]},
+    "PICKUP_A_APPROACH":    {"position": (-4.3, -2.33, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
+    "PICKUP_WAIT_A":    {"position": (3.1, -2.85, 1.03), "neighbors": ["PICKUP_A"]},
     
 }
 
@@ -140,14 +149,14 @@ NODE_GRAPH = {
 # 자신의 전용 컬럼을 타고 랙 꼭대기보다 높은 HUB의 Y까지 먼저 수직으로 올라간
 # 다음, 랙 위쪽(랙 영역보다 높은 층)에서만 수평으로 HUB까지 이동한다 —
 # 이러면 랙 영역을 수직/수평 어느 구간에서도 절대 지나가지 않는다.
-for _shoe_type in SHOE_TYPES:
-    _pickup_x = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][0]
-    _hub_y = NODE_GRAPH[f"HUB_{_shoe_type}"]["position"][1]
-    NODE_GRAPH[f"HUB_{_shoe_type}_APPROACH"] = {
-        "position": (_pickup_x, _hub_y, 0.0),
-        "neighbors": [f"HUB_{_shoe_type}"],
-    }
-    NODE_GRAPH[PICKUP_NODE[_shoe_type]]["neighbors"] = [f"HUB_{_shoe_type}_APPROACH"]
+# for _shoe_type in SHOE_TYPES:
+#     _pickup_x = NODE_GRAPH[PICKUP_NODE[_shoe_type]]["position"][0]
+#     _hub_y = NODE_GRAPH[f"HUB_{_shoe_type}"]["position"][1]
+#     NODE_GRAPH[f"HUB_{_shoe_type}_APPROACH"] = {
+#         "position": (_pickup_x, _hub_y, 0.0),
+#         "neighbors": [f"HUB_{_shoe_type}"],
+#     }
+#     NODE_GRAPH[PICKUP_NODE[_shoe_type]]["neighbors"] = [f"HUB_{_shoe_type}_APPROACH"]
 
 # RackX_OUT → PICKUP_X 굴절점(종류별 하나) — 복귀할 때도 OUT에서 픽업까지
 # 대각선으로 바로 가면 랙 구역을 가로지른다. OUT의 X를 그대로 따라 수직으로
@@ -277,6 +286,15 @@ _MAIN_LINE_SEGMENT_M = 1.2
 for _shoe_type in SHOE_TYPES:
     _subdivide_edge(PICKUP_NODE[_shoe_type], f"HUB_{_shoe_type}_APPROACH", _MAIN_LINE_SEGMENT_M)
     _subdivide_edge(f"HUB_{_shoe_type}_APPROACH", f"HUB_{_shoe_type}", _MAIN_LINE_SEGMENT_M)
+    # HUB_X → 랙 진입 두 갈래(근접 RackX_280 / 우회 HUB_X_detour → RackX_280_detour)도
+    # 같은 이유로 세분화한다 — 이 두 구간은 각각 근접/우회 한 갈래로만 가는
+    # 단일 경로라 세분화해도 280→260→240처럼 "체크포인트 순서를 지켜야 하는
+    # 사슬"과 안 섞인다. 근접/우회가 갈라진 *뒤*의 랙 내부 사슬(RackX_280→260→240,
+    # RackX_280_detour→260_detour→240_detour)은 각 정지 지점이 실제 배치
+    # 위치라 일부러 세분화하지 않는다(슬롯별 점유 판정이 필요해서).
+    _subdivide_edge(f"HUB_{_shoe_type}", f"Rack{_shoe_type}_280", _MAIN_LINE_SEGMENT_M)
+    _subdivide_edge(f"HUB_{_shoe_type}", f"HUB_{_shoe_type}_detour", _MAIN_LINE_SEGMENT_M)
+    _subdivide_edge(f"HUB_{_shoe_type}_detour", f"Rack{_shoe_type}_280_detour", _MAIN_LINE_SEGMENT_M)
     # 복귀 본선(OUT → PICKUP_X_APPROACH → PICKUP_WAIT_X → PICKUP_X)도 같은
     # 이유로 세분화한다 — PICKUP_X_APPROACH는 이제 PICKUP_WAIT_X 하나로만
     # 이어지므로(PICKUP_X 직행 갈래 없음) 갈림 없는 단일 경로만 쪼개면 된다.
