@@ -74,7 +74,7 @@ NOVA_CARTER_USD = os.path.expanduser(
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/demo0726_v2/demo0726_v2.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/demo0728_v3.usd"
 )
 
 # NODE_GRAPH 지점 시각화용 색상 — 노드 종류가 아니라 담당 신발 종류(A/B/C/D)로
