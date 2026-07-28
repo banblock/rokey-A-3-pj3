@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cobot3_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch package for the complete shoe recycling system.</description>
+  <maintainer email="junh001224@gmail.com">rokey</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>recycle_controller</exec_depend>
+  <exec_depend>sorting_line_fms</exec_depend>
+  <exec_depend>ui_node</exec_depend>
+  <exec_depend>vision_node</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
