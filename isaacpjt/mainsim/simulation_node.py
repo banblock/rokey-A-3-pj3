@@ -1156,7 +1156,12 @@ class SimulationNode:
 
         rclpy.spin_once(self._ros_node, timeout_sec=0.0)
 
-        self._update_amr_pick_place()
+        # 컨베이어/신발 생성과 마찬가지로 비상정지 중엔 로봇팔 pick&place도
+        # 새 명령을 내리지 않는다 - 마지막으로 적용된 관절 명령이 그대로
+        # 유지되니 팔은 그 자리에서 멈추고, 해제되면 하던 동작을 이어서
+        # 계속한다(2026-07-27, 사용자 요청).
+        if not self._emergency_stopped:
+            self._update_amr_pick_place()
 
         now = self._timeline.get_current_time()
 

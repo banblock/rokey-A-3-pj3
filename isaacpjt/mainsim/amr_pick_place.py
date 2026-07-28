@@ -66,7 +66,7 @@ EVENTS_DT = [
     0.02,   # 1. 하강
     0.5,    # 2. 그리퍼 닫기 대기
     1,      # 3. 그리퍼 닫힘 유지
-    0.02,  # 4. 들어올리기
+    0.01,  # 4. 들어올리기
     0.01,   # 5. Place 위치로 이동
     0.02,   # 6. 하강
     1,      # 7. 그리퍼 열기 대기
@@ -170,8 +170,38 @@ STORAGE_LAYER_HEIGHT = 0.15
 # 균일하게 적용했다 - 레이어1/2는 아래 박스 위에 쌓이는 자리라 이미 잘
 # 맞고 있어서 상대 간격은 건드리지 않는다.
 _STORAGE_SLOT_Z_COMPENSATION = [-0.026, -0.026, -0.026, -0.026, -0.026, -0.026]
+# event6(하강)이 Z뿐 아니라 XY도 고정 시간 예산 안에서 보간하는데, 그 시간이
+# 끝날 때 XY 수렴이 덜 끝난 채로 놓아버리는 경우가 있다(2026-07-27, 사용자
+# 확인 - "쏠려있다"/"조기에 내려놓는다"). diag_early_release_xy.py로 event7
+# 진입 시점의 실제 박스 world XY와 목표 world XY 차이를 실측한 뒤, 챗시
+# 회전(yaw)만큼 역회전시켜 chassis-local (dx, dy) 보정값으로 변환해서 더한다
+# - STORAGE_SLOT_LOCAL_POSITIONS 자체가 chassis-local 좌표라서, world 오차를
+# 그대로 더하면 로봇 방향에 따라 엉뚱한 방향으로 보정되기 때문에 반드시
+# 로컬로 변환해야 한다.
+# 2026-07-27 재측정(calibrate_xy.py, _anchor_chassis로 챗시 drift를 완전히
+# 제거한 뒤): chassis_yaw가 45.0도로 완벽하게 고정된 상태에서 측정했고, 두 번
+# 반복해도 소수점 4자리까지 완전히 동일해서(결정론적) drift가 아니라 순수한
+# RMPflow 잔여 수렴 오차다.
+#
+# 컬럼(col) 단위로만 보정한다 - 슬롯이 layer*2+col 순서라 같은 col(0,2,4
+# 또는 1,3,5)은 원래 XY가 완전히 같아야(레이어만 위로 쌓임) 하는데, 처음에
+# 슬롯 6개를 각각 독립적으로 보정했더니 같은 컬럼인데도 층마다 XY가 미세하게
+# 달라져서 위층이 아래층 위에 깔끔히 안 얹히는 문제가 있었다(2026-07-27,
+# 사용자 지적 - "1,3,5번은 XY 같아야 하는 거 아니야?"). 그래서 각 컬럼의
+# 레이어0(그 컬럼의 기초, 실제 판에 직접 얹히는 자리) 실측값을 그 컬럼
+# 전체(레이어1,2)에도 동일하게 적용한다 - Newton 반복으로 한 번 더
+# 다듬으려 했더니 층 간 상호의존성 때문에 오차가 폭발적으로 커진 적이
+# 있어서(14~38cm), 지금은 1차 실측값만 쓴다.
+_STORAGE_SLOT_XY_COMPENSATION_PER_COL = [
+    (0.0256, 0.0249),  # col0 (슬롯0/2/4) - 슬롯0(레이어0) 실측
+    (0.0084, 0.0026),  # col1 (슬롯1/3/5) - 슬롯1(레이어0) 실측
+]
 STORAGE_SLOT_LOCAL_POSITIONS = [
-    np.array([-0.85, y, 0.44 + layer * STORAGE_LAYER_HEIGHT + _STORAGE_SLOT_Z_COMPENSATION[layer * 2 + col]])
+    np.array([
+        -0.85 + _STORAGE_SLOT_XY_COMPENSATION_PER_COL[col][0],
+        y + _STORAGE_SLOT_XY_COMPENSATION_PER_COL[col][1],
+        0.44 + layer * STORAGE_LAYER_HEIGHT + _STORAGE_SLOT_Z_COMPENSATION[layer * 2 + col],
+    ])
     for layer in range(3)
     for col, y in enumerate((-0.13, 0.13))
 ]
@@ -363,6 +393,7 @@ class AmrArmController:
         self._grasp_rel_rot: Optional[Gf.Quatd] = None
         self._welded_this_rep = False
         self._unwelded_this_rep = False
+        self._chassis_anchored = False
         self._retry_count = 0
         self._cycle_target: Optional[np.ndarray] = None
 
@@ -376,6 +407,10 @@ class AmrArmController:
         self._current_shelf_num: Optional[int] = None
         self._pick_remaining = 0
         self._cooldown_remaining = 0
+        # cooldown이 끝난 뒤 "pick"(_begin_next_pick_repetition)과
+        # "place"(_begin_place_attempt) 중 어느 쪽을 재개할지 - 재시도든
+        # 다음 반복이든 이 값으로 분기한다(update()의 cooldown 처리 참고).
+        self._cooldown_next_phase = "pick"
         self._return_home_steps_left = 0
         # returning_home 시작 시점의 관절각 - 거기서부터 홈 자세까지 매
         # 프레임 서서히 섞어가며(_step_return_home 참고) 최종 목표를 첫
@@ -890,6 +925,48 @@ class AmrArmController:
             stage.RemovePrim(joint_path)
 
     # -----------------------------------------------------------------
+    # 챗시 임시 고정 - pick&place 중 팔 반작용으로 챗시가 조금씩 밀리는
+    # drift를 원천 차단한다(2026-07-27, 사용자 확인 - 픽업 사이클마다 챗시
+    # yaw가 44.1도->40.6도로 계속 줄어드는 것을 실측으로 확인, "정지 위치에서
+    # 조금씩 움직임"). Body0Rel을 비워두면(=world) 그 프레임에서 챗시의
+    # "지금 이 순간" 월드 pose를 그대로 LocalPos0/LocalRot0으로 고정하는
+    # 뜻이 된다 - 그 시점 위치에 못 박아버리는 것과 같다.
+    # -----------------------------------------------------------------
+
+    def _chassis_anchor_joint_path(self) -> str:
+        return f"{self._chassis_path}/ChassisAnchorJoint"
+
+    def _anchor_chassis(self) -> None:
+        if self._chassis_anchored:
+            return
+        stage = omni.usd.get_context().get_stage()
+        chassis_prim = stage.GetPrimAtPath(self._chassis_path)
+        if not chassis_prim.IsValid():
+            return
+        chassis_mat = UsdGeom.Xformable(chassis_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        world_pos = chassis_mat.ExtractTranslation()
+        world_rot = chassis_mat.ExtractRotationQuat()
+
+        joint_path = self._chassis_anchor_joint_path()
+        joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+        joint.CreateBody1Rel().SetTargets([Sdf.Path(self._chassis_path)])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(world_pos))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(world_rot))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.GetPrim().GetAttribute("physics:excludeFromArticulation").Set(True)
+        self._chassis_anchored = True
+
+    def _release_chassis_anchor(self) -> None:
+        if not self._chassis_anchored:
+            return
+        stage = omni.usd.get_context().get_stage()
+        joint_path = self._chassis_anchor_joint_path()
+        if stage.GetPrimAtPath(joint_path).IsValid():
+            stage.RemovePrim(joint_path)
+        self._chassis_anchored = False
+
+    # -----------------------------------------------------------------
     # 외부 API
     # -----------------------------------------------------------------
 
@@ -918,6 +995,7 @@ class AmrArmController:
             )
             count = free_slots
         self._pick_remaining = count
+        self._anchor_chassis()
         self._begin_next_pick_repetition()
         return True
 
@@ -973,6 +1051,7 @@ class AmrArmController:
             return False
         self._retry_count = 0
         self._current_shelf_num = shelf_num
+        self._anchor_chassis()
         self._begin_place_attempt(slot_index, box_prim_path, shelf_num)
         return True
 
@@ -1024,7 +1103,12 @@ class AmrArmController:
         if self._phase == "cooldown":
             self._cooldown_remaining -= 1
             if self._cooldown_remaining <= 0:
-                self._begin_next_pick_repetition()
+                if self._cooldown_next_phase == "place":
+                    self._begin_place_attempt(
+                        self._current_slot_index, self._current_box_prim_path, self._current_shelf_num
+                    )
+                else:
+                    self._begin_next_pick_repetition()
             return None
 
         if self._phase == "returning_home":
@@ -1125,6 +1209,7 @@ class AmrArmController:
             return None
 
         if self._phase == "pick_to_storage":
+            self._cooldown_next_phase = "pick"
             if self._grasp_confirmed:
                 self._slot_box_paths[self._current_slot_index] = self._current_box_prim_path
                 self._slot_fill_order.append(self._current_slot_index)
@@ -1167,9 +1252,39 @@ class AmrArmController:
             return None
 
         if self._phase == "place_from_storage":
-            self._slot_box_paths[self._current_slot_index] = None
-            self._slot_fill_order.remove(self._current_slot_index)
-            self._after_return_home = "place_done"
+            self._cooldown_next_phase = "place"
+            if self._grasp_confirmed:
+                # 실제로 흡착에 성공했을 때만 슬롯을 비운다 - 예전엔 이
+                # 흡착 성공 여부를 아예 확인 안 하고 무조건 슬롯을 비우고
+                # "place_done"을 돌려줬어서, 흡착이 실패해도(박스는 그대로
+                # 창고에 용접된 채 남아있는데) 마치 성공한 것처럼 보고되는
+                # 버그가 있었다(2026-07-27, 사용자 확인 - "임시 저장소 1번째
+                # 층 박스가 그리퍼랑 닿았는데 흡착이 안 됐는데"도 결국
+                # place_done으로 잘못 보고됐던 사례).
+                self._slot_box_paths[self._current_slot_index] = None
+                self._slot_fill_order.remove(self._current_slot_index)
+                self._retry_count = 0
+                self._after_return_home = "place_done"
+            else:
+                self._retry_count += 1
+                if self._retry_count <= MAX_PICK_RETRIES:
+                    # 흡착 실패 - 박스는 여전히 창고에 용접된 채 그대로다
+                    # (_unwelded_this_rep이 False로 남아있음). 같은
+                    # slot_index/box_prim_path/shelf_num으로 그대로 재시도한다.
+                    print(
+                        f"[amr_pick_place] {self.robot_id}: place 흡착 실패 - "
+                        f"재시도 {self._retry_count}/{MAX_PICK_RETRIES}",
+                        flush=True,
+                    )
+                    self._after_return_home = "next_rep"
+                else:
+                    print(
+                        f"[amr_pick_place] {self.robot_id}: place 흡착 실패 - "
+                        f"재시도 {MAX_PICK_RETRIES}회 모두 실패, 이번엔 포기",
+                        flush=True,
+                    )
+                    self._retry_count = 0
+                    self._after_return_home = "place_failed"
             self._start_return_home()
             return None
 
@@ -1216,4 +1331,5 @@ class AmrArmController:
             self._cooldown_remaining = COOLDOWN_STEPS
             return None
         self._phase = "idle"
+        self._release_chassis_anchor()
         return after
