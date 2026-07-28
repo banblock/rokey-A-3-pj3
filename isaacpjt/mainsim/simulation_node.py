@@ -23,7 +23,15 @@ import omni.timeline
 import omni.usd
 from omni.physx import get_physx_simulation_interface
 from omni.physx.bindings import _physx
-from pxr import Gf, PhysicsSchemaTools, Sdf, Usd, UsdGeom
+from pxr import Gf, PhysicsSchemaTools, Sdf, Usd, UsdGeom, UsdShade
+
+from shoe_damage import (
+    cache_mesh_topology,
+    create_condition_materials,
+    make_ellipse_patch,
+    pick_tear_placement,
+    update_ellipse_patch,
+)
 
 
 
@@ -137,8 +145,20 @@ class RosInterface(Node):
 
 CONVEYOR_RESTART_DELAY_SEC: Final[float] = 2.0
 SHOE_ACTIVATION_DELAY_SEC: Final[float] = 8.0
-STOP_TRIGGER_DELAY_SEC: Final[float] = 0.6
+STOP_TRIGGER_DELAY_SEC: Final[float] = 0.7
 STOP_TRIGGER_RESTART_DELAY_SEC: Final[float] = 2.0
+
+# StopTrigger는 신발 콜라이더의 "앞쪽 끝"이 트리거 볼륨에 닿는 순간을 감지한다
+# - 신발 사이즈(240/260/280)가 다르면 그 순간의 신발 중심 world X가 사이즈만큼
+# 달라져서, 그 뒤 같은 시간만큼 벨트가 움직여도 최종 정지 위치(중심 기준)가
+# 사이즈마다 어긋난다(2026-07-28, 사용자 확인 - "사이즈 랜덤화 이후 카메라
+# 이미지에서 신발 위치가 사이클마다 달라짐"). 그래서 정지 순간엔 목표 world XY로
+# 신발 위치를 강제로 스냅해서, 사이즈와 무관하게 항상 같은 위치에서 멈추게
+# 한다. 목표 좌표는 D455_3(바닥/실측용 카메라, isaac_shoe_bottom_sdg.py 참고)의
+# world XY를 그대로 썼다(사용자 지정 - "d455 카메라 3번 위치랑 xy 위치 맞추면
+# 될 거 같은데") - 카메라가 내려다보는 지점과 신발이 항상 정확히 겹치게 된다.
+SHOE_STOP_TARGET_X: Final[float] = -1.2798820262455302
+SHOE_STOP_TARGET_Y: Final[float] = 2.748851058482757
 
 
 # =====================================================================
@@ -150,6 +170,13 @@ SHOE_PATHS: Final[tuple[str, ...]] = (
     "/World/shoes/sneaker_0001_red_240_ok_01",
     "/World/shoes/sneaker_0001_red_240_ok_02",
 )
+
+# 신발 활성화 시 랜덤으로 뽑는 사이즈(mm, 실제 발길이 - 240/260/280 사이즈
+# 체계) - 기본 에셋(sneaker_240)이 240 기준이라, 다른 사이즈는 이 비율로
+# 균등 스케일해서 흉내낸다.
+SHOE_SIZES_MM: Final[tuple[int, ...]] = (240, 260, 280)
+BASE_SHOE_SIZE_MM: Final[int] = 240
+SHOE_CONDITIONS: Final[tuple[str, ...]] = ("ok", "tear")
 
 
 # =====================================================================
@@ -523,6 +550,16 @@ class SimulationNode:
             list[tuple[str, object]],
         ] = {}
 
+        # 신발마다: [(TearPatch mesh prim, tear 위치 선정용 토폴로지), ...]
+        # (메시 하나당 하나) - _setup_shoe_damage_rig에서 한 번만 채운다.
+        self._shoe_damage_rigs: dict[
+            str,
+            list[tuple[UsdGeom.Mesh, dict]],
+        ] = {}
+        self._shoe_damage_materials = create_condition_materials(
+            self._stage
+        )
+
         for shoe_path in SHOE_PATHS:
             shoe_prim = self._stage.GetPrimAtPath(
                 shoe_path
@@ -541,6 +578,11 @@ class SimulationNode:
 
             self._initial_xforms[shoe_path] = (
                 _capture_xform_state(shoe_prim)
+            )
+
+            self._setup_shoe_damage_rig(
+                shoe_path,
+                shoe_prim,
             )
 
             shoe_prim.SetActive(False)
@@ -759,6 +801,85 @@ class SimulationNode:
     # 신발 처리
     # =================================================================
 
+    def _setup_shoe_damage_rig(
+        self,
+        shoe_path: str,
+        shoe_prim: Usd.Prim,
+    ) -> None:
+        """신발의 각 Mesh 밑에 TearPatch 오버레이 메시를 하나씩 만들어 둔다
+        (기본은 숨김). 실제로 face를 잘라내는 대신(export_damaged_shoe_usd.py는
+        일회성 파일 export라 그렇게 해도 되지만, 이 풀은 활성화/비활성화를
+        반복 재사용하므로 되돌릴 수 없는 변형은 쓸 수 없다) 위에 얇은 패치를
+        덧씌워서 tear처럼 보이게 한다."""
+
+        meshes = [
+            UsdGeom.Mesh(d)
+            for d in Usd.PrimRange(shoe_prim)
+            if d.IsA(UsdGeom.Mesh)
+        ]
+
+        rigs: list[tuple[UsdGeom.Mesh, dict]] = []
+
+        for mesh in meshes:
+            UsdShade.MaterialBindingAPI(mesh).Bind(
+                self._shoe_damage_materials["normal"]
+            )
+            topo = cache_mesh_topology(mesh)
+
+            patch = make_ellipse_patch(
+                self._stage,
+                mesh.GetPath().AppendChild("TearPatch"),
+            )
+            UsdShade.MaterialBindingAPI(patch).Bind(
+                self._shoe_damage_materials["tear"]
+            )
+            UsdGeom.Imageable(patch).MakeInvisible()
+
+            rigs.append((patch, topo))
+
+        self._shoe_damage_rigs[shoe_path] = rigs
+
+    def _apply_random_shoe_variant(
+        self,
+        shoe_path: str,
+        shoe_prim: Usd.Prim,
+    ) -> None:
+        """활성화되는 신발에 랜덤 사이즈(240/260/280)와 상태(정상/tear)를
+        입힌다."""
+
+        size_mm = random.choice(SHOE_SIZES_MM)
+        scale = size_mm / BASE_SHOE_SIZE_MM
+
+        xformable = UsdGeom.Xformable(shoe_prim)
+        scale_op = None
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                scale_op = op
+                break
+        if scale_op is None:
+            scale_op = xformable.AddScaleOp()
+        # Z는 스케일하지 않는다 - 높이까지 늘리면 사이즈가 커질수록 신발이
+        # 컨베이어 바닥 기준으로 떠버리거나 파묻힌다(2026-07-28, 사용자 확인).
+        scale_op.Set(Gf.Vec3f(scale, scale, 1.0))
+
+        condition = random.choice(SHOE_CONDITIONS)
+        rigs = self._shoe_damage_rigs.get(shoe_path, [])
+
+        for patch, topo in rigs:
+            if condition == "tear":
+                center, axis1, axis2, normal, rx, ry = pick_tear_placement(
+                    topo, random
+                )
+                update_ellipse_patch(patch, center, axis1, axis2, normal, rx, ry)
+                UsdGeom.Imageable(patch).MakeVisible()
+            else:
+                UsdGeom.Imageable(patch).MakeInvisible()
+
+        print(
+            "[simulation] 신발 변형 적용: "
+            f"{shoe_path} size={size_mm} condition={condition}"
+        )
+
     def _get_shoe(
         self,
         shoe_path: str,
@@ -817,6 +938,11 @@ class SimulationNode:
         _restore_xform_state(
             shoe_prim,
             self._initial_xforms[selected_path],
+        )
+
+        self._apply_random_shoe_variant(
+            selected_path,
+            shoe_prim,
         )
 
         imageable = UsdGeom.Imageable(shoe_prim)
@@ -995,6 +1121,21 @@ class SimulationNode:
         self._ros_node.publish_shoe_stop()
         print(f"[simulation] {SHOE_STOP_TOPIC}: data=True 발행")
 
+    def _read_shoe_world_x(
+        self,
+        shoe_path: str,
+    ) -> float | None:
+        shoe_prim = self._get_shoe(shoe_path)
+
+        if not shoe_prim.IsValid():
+            return None
+
+        world_xf = UsdGeom.Xformable(shoe_prim).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default()
+        )
+
+        return float(world_xf.ExtractTranslation()[0])
+
     def _start_stop_trigger_sequence(
         self,
         shoe_path: str,
@@ -1017,6 +1158,7 @@ class SimulationNode:
             {
                 "shoe_path": shoe_path,
                 "started_at": started_at,
+                "start_x": self._read_shoe_world_x(shoe_path),
                 "stopped": False,
                 "restarted": False,
             }
@@ -1029,6 +1171,57 @@ class SimulationNode:
             f"active_sequences={len(self._stop_trigger_sequences)}"
         )
 
+    def _snap_shoe_to_stop_position(
+        self,
+        shoe_path: str,
+    ) -> None:
+        """정지 순간 신발의 world XY를 SHOE_STOP_TARGET_X/Y로 강제 스냅한다(Z는
+        그대로 둔다) - 사이즈별 정지 위치 불일치 문제 참고(SHOE_STOP_TARGET_X
+        정의부 주석)."""
+
+        shoe_prim = self._get_shoe(shoe_path)
+
+        if not shoe_prim.IsValid():
+            return
+
+        xformable = UsdGeom.Xformable(shoe_prim)
+        translate_op = None
+
+        for op in xformable.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                translate_op = op
+                break
+
+        if translate_op is None:
+            return
+
+        world_xf = xformable.ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default()
+        )
+        world_pos = world_xf.ExtractTranslation()
+
+        parent_xf = UsdGeom.Xformable(
+            shoe_prim.GetParent()
+        ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+        target_world = Gf.Vec3d(
+            SHOE_STOP_TARGET_X,
+            SHOE_STOP_TARGET_Y,
+            world_pos[2],
+        )
+        target_local = parent_xf.GetInverse().Transform(target_world)
+
+        translate_op.Set(target_local)
+
+        for attr_name in (
+            "physics:velocity",
+            "physics:angularVelocity",
+        ):
+            attr = shoe_prim.GetAttribute(attr_name)
+
+            if attr.IsValid():
+                attr.Set(Gf.Vec3f(0.0, 0.0, 0.0))
+
     def _update_stop_trigger_sequences(
         self,
         now: float,
@@ -1040,20 +1233,43 @@ class SimulationNode:
             started_at = float(sequence["started_at"])
             elapsed = max(0.0, now - started_at)
 
-            if (
-                not bool(sequence["stopped"])
-                and elapsed >= STOP_TRIGGER_DELAY_SEC
-            ):
-                self._working_conveyor_velocity_attr.Set(0.0)
-                self._publish_shoe_stop()
-                sequence["stopped"] = True
+            if not bool(sequence["stopped"]):
+                # 원래는 "접촉 후 고정 시간"만 보고 멈췄는데, 그 시점의 실제
+                # 위치는 목표(SHOE_STOP_TARGET_X)를 이미 살짝 지나쳐 있어서
+                # _snap_shoe_to_stop_position이 뒤로 순간이동시키는 게 눈에
+                # 보였다(2026-07-28, 사용자 확인 - "정지 위치를 살짝 지나쳤다가
+                # 다시 정지위치로 순간이동"). 그래서 매 프레임 신발의 실제
+                # world X가 시작 위치 기준으로 목표를 "막 지나친 순간"을 감지해서
+                # 그때 바로 멈추면, 스냅 보정량이 거의 0이라 순간이동이 안
+                # 보인다. 무언가에 걸려 목표에 영영 도달하지 못하는 경우에
+                # 대비해 STOP_TRIGGER_DELAY_SEC를 그대로 안전장치(최대 대기
+                # 시간)로 남겨둔다.
+                start_x = sequence.get("start_x")
+                current_x = self._read_shoe_world_x(shoe_path)
 
-                print(
-                    "[STOP_SEQUENCE STOP] "
-                    f"shoe={shoe_path}, "
-                    f"elapsed={elapsed:.3f}, "
-                    f"time={now:.3f}"
+                reached_target = (
+                    start_x is not None
+                    and current_x is not None
+                    and (start_x - SHOE_STOP_TARGET_X)
+                    * (current_x - SHOE_STOP_TARGET_X)
+                    <= 0.0
                 )
+                timed_out = elapsed >= STOP_TRIGGER_DELAY_SEC
+
+                if reached_target or timed_out:
+                    self._working_conveyor_velocity_attr.Set(0.0)
+                    self._snap_shoe_to_stop_position(shoe_path)
+                    self._publish_shoe_stop()
+                    sequence["stopped"] = True
+
+                    print(
+                        "[STOP_SEQUENCE STOP] "
+                        f"shoe={shoe_path}, "
+                        f"reached_target={reached_target}, "
+                        f"timed_out={timed_out}, "
+                        f"elapsed={elapsed:.3f}, "
+                        f"time={now:.3f}"
+                    )
 
             if (
                 not bool(sequence["restarted"])
