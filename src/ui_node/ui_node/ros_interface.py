@@ -12,7 +12,6 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String, Int32
 from std_srvs.srv import Trigger
 from recycle_interfaces.msg import ShoeInspectionResult
-
 # ============================================================
 # ROS2 topic / service names
 # 실제 프로젝트 인터페이스 이름에 맞게 이 부분만 수정한다.
@@ -145,7 +144,7 @@ class DashboardRosNode(Node):
         # )
 
         self.create_subscription(
-            String,
+            ShoeInspectionResult,
             SHOE_RESULT_TOPIC,
             self._shoe_result_callback,
             10,
@@ -153,7 +152,7 @@ class DashboardRosNode(Node):
         )
 
         self.create_subscription(
-            ShoeInspectionResult,
+            String,
             AMR_STATUS_TOPIC,
             self._amr_status_callback,
             10,
