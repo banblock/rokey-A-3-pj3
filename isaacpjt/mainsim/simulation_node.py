@@ -176,7 +176,7 @@ SHOE_PATHS: Final[tuple[str, ...]] = (
 # 균등 스케일해서 흉내낸다.
 SHOE_SIZES_MM: Final[tuple[int, ...]] = (240, 260, 280)
 BASE_SHOE_SIZE_MM: Final[int] = 240
-SHOE_CONDITIONS: Final[tuple[str, ...]] = ("ok", "tear")
+SHOE_TEAR_PROBABILITY: Final[float] = 0.2
 
 
 # =====================================================================
@@ -862,7 +862,7 @@ class SimulationNode:
         # 컨베이어 바닥 기준으로 떠버리거나 파묻힌다(2026-07-28, 사용자 확인).
         scale_op.Set(Gf.Vec3f(scale, scale, 1.0))
 
-        condition = random.choice(SHOE_CONDITIONS)
+        condition = "tear" if random.random() < SHOE_TEAR_PROBABILITY else "ok"
         rigs = self._shoe_damage_rigs.get(shoe_path, [])
 
         for patch, topo in rigs:
