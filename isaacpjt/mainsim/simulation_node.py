@@ -138,7 +138,7 @@ class RosInterface(Node):
 CONVEYOR_RESTART_DELAY_SEC: Final[float] = 2.0
 SHOE_ACTIVATION_DELAY_SEC: Final[float] = 8.0
 STOP_TRIGGER_DELAY_SEC: Final[float] = 0.8
-STOP_TRIGGER_RESTART_DELAY_SEC: Final[float] = 5.0
+STOP_TRIGGER_RESTART_DELAY_SEC: Final[float] = 2.0
 
 
 # =====================================================================
