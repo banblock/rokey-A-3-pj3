@@ -12,7 +12,7 @@ from std_msgs.msg import Int32, String, Bool
 from std_srvs.srv import Trigger
 from recycle_interfaces.msg import PickupList, ShoeInspectionResult
 from recycle_interfaces.srv import AmrState
-
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 BATCH_SIZE = 5
 
@@ -21,14 +21,23 @@ PAUSE_SERVICE = "/control/pause"
 RESTART_SERVICE = "/control/restart"
 STOP_SERVICE = "/control/stop"
 RESET_SERVICE = "/control/reset"
+RELIABLE_EVENT_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+)
 
 class ControlNode(Node):
 
     def __init__(self):
         super().__init__("control_node")
 
+
+
         self.callback_group = ReentrantCallbackGroup()
         self.state_lock = threading.RLock()
+
 
         self.factory_state = False
         self.factory_pause = False
@@ -124,7 +133,8 @@ class ControlNode(Node):
         self.conveyor_stop_pub = self.create_publisher(
             Bool,
             "/control/emergency_stop",
-            20
+            qos_profile=RELIABLE_EVENT_QOS
+
         )
 
         self.factory_start_pub = self.create_publisher(
