@@ -3,12 +3,10 @@ install/
 log/
 __pycache__/
 *.pyc
-*.usd
 *.onnx
 *.pth
 .claude/
 .vscode/
-*.urdf
 *.usda
 *.mdl
 *.png
@@ -18,7 +16,6 @@ __pycache__/
 *.json
 *.txt
 *.csv
-*.usdz
 *.zip
 runs/
 dataset_*/
