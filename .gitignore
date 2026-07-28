@@ -7,15 +7,3 @@ __pycache__/
 *.pth
 .claude/
 .vscode/
-*.usda
-*.mdl
-*.png
-*.jpg
-*.jpeg
-*.npy
-*.json
-*.txt
-*.csv
-*.zip
-runs/
-dataset_*/

@@ -68,14 +68,14 @@ WHEEL_RADIUS_M = 0.14
 WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
 WHEEL_JOINT_NAMES = ["joint_wheel_left", "joint_wheel_right"]
 
-NOVA_CARTER_USD = os.path.expanduser(
-    "./nova_carter_ur5e_surface_gripper.usd"
-)
+# 다른 컴퓨터에서 실행해도 경로가 깨지지 않도록 이 스크립트 파일 위치 기준
+# 절대경로로 계산한다(cwd나 홈 디렉토리에 의존하지 않음).
+_MAINSIM_DIR = os.path.dirname(os.path.abspath(__file__))
+_ENV_USD_DIR = os.path.join(_MAINSIM_DIR, "env_usd")
 
+NOVA_CARTER_USD = os.path.join(_ENV_USD_DIR, "nova_carter_ur5e_surface_gripper.usd")
 
-USD_PATH = os.path.expanduser(
-    "./demo0728_v3.usd"
-)
+USD_PATH = os.path.join(_ENV_USD_DIR, "demo0728_v3.usd")
 
 # NODE_GRAPH 지점 시각화용 색상 — 노드 종류가 아니라 담당 신발 종류(A/B/C/D)로
 # 칠한다("이 노드를 이 로봇이 담당한다"는 게 색으로 바로 보이게).

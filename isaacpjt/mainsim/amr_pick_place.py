@@ -44,7 +44,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
 from isaacsim.core.utils.types import ArticulationAction
 
-_RMPFLOW_DIR = Path("/home/rokey/cobot3_ws/isaacpjt/UR5E/rmpflow")
+_RMPFLOW_DIR = Path(__file__).resolve().parent.parent / "UR5E" / "rmpflow"
 if str(_RMPFLOW_DIR) not in sys.path:
     sys.path.insert(0, str(_RMPFLOW_DIR))
 
