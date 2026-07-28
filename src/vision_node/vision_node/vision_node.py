@@ -50,8 +50,8 @@ class VisionNode(Node):
         # 240/260/280mm 3개를 나눈다 (실측 캘리브레이션 끝나면 이 두 임계값만 바꾸면 됨).
         self.declare_parameter('model_path_stage3', '/home/rokey/cobot3_ws/src/vision_node/resource/best_task3.pt')
         self.declare_parameter('image_size_stage3', 960)
-        self.declare_parameter('size_px_threshold_1', 300.0)  # 이 미만 -> 240mm
-        self.declare_parameter('size_px_threshold_2', 340.0)  # 이상 -> 280mm, 사이는 260mm
+        self.declare_parameter('size_px_threshold_1', 430.0)  # 이 미만 -> 240mm
+        self.declare_parameter('size_px_threshold_2', 450.0)  # 이상 -> 280mm, 사이는 260mm
 
         self.model_path = self.get_parameter('model_path').value
         self.model_path_stage2 = self.get_parameter('model_path_stage2').value

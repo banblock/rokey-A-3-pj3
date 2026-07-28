@@ -75,14 +75,14 @@ RELIABLE_EVENT_QOS = QoSProfile(
     depth=50,
 )
 
-MAX_SHOES_PER_TRIP = 1  # 로봇 1대가 한 번 나갈 때 실을 수 있는 최대 신발 수(실제 적재 용량)
+MAX_SHOES_PER_TRIP = 4  # 로봇 1대가 한 번 나갈 때 실을 수 있는 최대 신발 수(실제 적재 용량)
 # idle 로봇이 있어도 같은 종류 큐에 이 개수 이상 쌓이기 전에는 출발시키지 않는다
 # — 원래는 idle 로봇+큐에 뭐라도 있으면 즉시(남은 만큼만이라도) 출발시켰는데,
 # 그러면 신발이 3~4개만 들어와도 로봇이 바로 나가서 트립을 다 못 채우는 경우가
 # 잦았다. MAX_SHOES_PER_TRIP과 값이 같아야 "항상 꽉 채운 트립만 나간다"가
 # 되고, 더 작게 두면(예: 3) "3개 이상만 모이면 출발, 최대 5개까지만 싣는다"처럼
 # 최소/최대를 따로 조절할 수 있다.
-MIN_SHOES_TO_DISPATCH = 1
+MIN_SHOES_TO_DISPATCH = 4
 # 배치 안에서 여러 사이즈가 섞여 있으면 반드시 280→260→240 순서로 방문해야 한다
 # — 랙 진입 통로가 일방통행이라 작은 사이즈부터 들르면 큰 사이즈로 되돌아갈 수 없다.
 _SIZE_VISIT_ORDER = {"280": 0, "260": 1, "240": 2}
@@ -174,6 +174,11 @@ class FleetManagementSystem(Node):
         # 선반별 누적 박스 수 — /fms/amr_carrying 이벤트를 발행할 때마다 갱신한다
         # (정규화된 노드명 기준 — 근접/detour는 같은 선반이므로 카운트를 공유해야 한다).
         self._shelf_box_count = {node: 0 for node in SHELF_INDEX}
+        # rack_prefix("RackA" 등) -> 근접 통로 "영역"(HUB→280 진입 세분화
+        # 칸들 + 280/260/240 체크포인트 + OUT)에 속하는 노드 전체 목록.
+        # NODE_GRAPH는 시작 이후 안 바뀌므로 rack_prefix당 한 번만 계산해서
+        # 캐싱한다(_near_lane_zone_nodes 참고).
+        self._near_lane_zone_cache = {}
 
         # /fms/commands는 개별 로봇에 이동 지시를 보내는 채널이라, 구독(fleet_driver)이
         # 디스커버리 완료 전에 발행된 명령을 놓치면 그 로봇은 영원히 멈춰 있게 된다 —
@@ -378,26 +383,21 @@ class FleetManagementSystem(Node):
         if robot["tasks"]:
             # 이번 트립에서 이 로봇이 맡은 배치에 아직 안 내려놓은 신발이
             # 남아있다 — 픽업으로 복귀하지 않고 그대로 다음 목표(랙의 다음
-            # 사이즈 슬롯)로 이어서 이동한다. 근접/detour는 배정 시점이
-            # 아니라 지금(막 하나 내려놓은 시점) 다시 판단한다 — 방금
-            # 로봇이 근접 슬롯을 떠나면서 락이 풀렸을 수도 있고, 그 사이
-            # 다른 로봇이 들어왔을 수도 있어서다.
+            # 사이즈 슬롯)로 이어서 이동한다. dwelling은 항상 랙 노드
+            # (arrived_node가 Rack{shoe_type}_로 시작)에서만 시작되므로(
+            # register_robot을 봐도 다른 진입 경로가 없다 - 2026-07-27 확인,
+            # 이 자리에 있던 "else: _pick_rack_target로 재판단" 분기는 도달
+            # 불가능한 죽은 코드라 제거함), 근접↔detour는 지금 다시 판단하지
+            # 않고 이미 들어와 있는 레인 그대로 유지한다 - 입구(HUB)에서만
+            # 갈라질 뿐 랙 진입 후에는 두 레인이 서로 이어져 있지 않아서,
+            # 여기서 레인을 바꾸려 하면 shortest_path가 반대쪽 레인 끝까지
+            # 다 지나 픽업/허브를 한 바퀴 통째로 돌아 재진입하는 경로를
+            # 돌려준다(실제로 트립 전체를 한 바퀴 더 도는 문제가 있었다).
             next_task = robot["tasks"][0]
-            if arrived_node.startswith(f"Rack{shoe_type}_"):
-                # 이미 랙 레인(근접이든 detour든) 안에 들어와 있다 — 근접↔detour는
-                # 입구(HUB)에서만 갈라질 뿐 랙 진입 후에는 서로 이어져 있지 않아서,
-                # 지금 레인을 바꾸려 하면 shortest_path가 반대쪽 레인 끝까지 다
-                # 지나 픽업/허브를 한 바퀴 통째로 돌아 재진입하는 경로를 돌려준다
-                # — 실제로 근접 레인 안에서(예: RackA_260) 마지막 신발만 detour로
-                # 재배정되는 바람에 트립 전체를 한 바퀴 더 도는 문제가 있었다
-                # (반대 방향인 detour→근접 전환도 똑같은 문제였음). _pick_rack_target로
-                # 재판단하지 않고, 이번 트립 동안은 지금 들어와 있는 레인 그대로 유지한다.
-                actual_target = (
-                    f"{next_task['target_node']}_detour" if arrived_node.endswith("_detour")
-                    else next_task["target_node"]
-                )
-            else:
-                actual_target = self._pick_rack_target(next_task["target_node"], robot_id)
+            actual_target = (
+                f"{next_task['target_node']}_detour" if arrived_node.endswith("_detour")
+                else next_task["target_node"]
+            )
             next_task["target_node"] = actual_target
 
             if actual_target == arrived_node:
@@ -621,30 +621,35 @@ class FleetManagementSystem(Node):
 
         next_node = robot["path"][next_idx]
 
-        # 근접 통로의 "280"(대) 체크포인트로 들어가려는 참인데 이미 다른 로봇이
-        # 거기 있다면(태스크 배정 시점엔 비어있어서 근접으로 나왔지만, 그 사이
-        # 파트너가 먼저 들어온 경우) — 배정 당시 판단은 이미 낡았으니 무작정
-        # 기다리지 말고 지금(HUB 등에서) detour로 즉시 재경로한다. _pick_rack_target은
-        # 배정 시점 스냅샷 판단이라 이동 중 상황 변화를 못 따라가는 게 근본 원인.
-        if (
-            next_node.startswith("Rack") and next_node.endswith("_280")
-            and self.node_locks.get(next_node) not in (None, robot_id)
-            and robot["tasks"]
-            and not robot["tasks"][0]["target_node"].endswith("_detour")
-        ):
+        # 근접 통로 영역(_near_lane_zone_nodes)으로 막 들어가려는 참인데
+        # 그 사이 상황이 바뀌었을 수 있다(태스크 배정 시점엔 비어있어서
+        # 근접으로 나왔지만, 파트너가 먼저 들어왔거나 아직 통로를 안
+        # 벗어난 경우) — 배정 당시 판단은 이미 낡았으니 무작정 진입하지
+        # 말고 지금(영역 진입 직전, 보통 HUB) 다시 판단한다. "영역 밖 ->
+        # 영역 안"으로 넘어가는 그 한 홉에서만 재확인한다 - 일단 영역
+        # 안으로 들어간 뒤에는 되돌아 나올 수 없으니 계속 확인할 필요가
+        # 없다(2026-07-27, 사용자 제안 - "rack280 진입~rack240 퇴장까지를
+        # 하나의 영역으로 보고 판단". 예전엔 이 재확인이 "RackA_280"
+        # 노드로 들어가는 마지막 한 홉에서만 발동해서, 세분화된 진입
+        # 구간(HUB_A__RackA_280_1/2/3)을 이미 다 지나간 뒤에야 감지했다).
+        if robot["tasks"] and not robot["tasks"][0]["target_node"].endswith("_detour"):
             current_task = robot["tasks"][0]
-            detour_target = f"{current_task['target_node']}_detour"
-            detour_path = shortest_path(robot["current_node"], detour_target)
-            if detour_path is not None:
-                self.get_logger().info(
-                    f"[{robot_id}] {next_node} 점유 중 → detour로 재경로 "
-                    f"({current_task['target_node']} → {detour_target})"
-                )
-                current_task["target_node"] = detour_target
-                robot["path"] = detour_path
-                robot["path_idx"] = 0
-                next_idx = 1
-                next_node = robot["path"][next_idx]
+            rack_prefix = current_task["target_node"].split("_")[0]
+            zone_nodes = self._near_lane_zone_nodes(rack_prefix)
+            if next_node in zone_nodes and robot["current_node"] not in zone_nodes:
+                recheck_target = self._pick_rack_target(current_task["target_node"], robot_id)
+                if recheck_target.endswith("_detour"):
+                    detour_path = shortest_path(robot["current_node"], recheck_target)
+                    if detour_path is not None:
+                        self.get_logger().info(
+                            f"[{robot_id}] 근접 통로 영역 점유 감지 → detour로 재경로 "
+                            f"({current_task['target_node']} → {recheck_target})"
+                        )
+                        current_task["target_node"] = recheck_target
+                        robot["path"] = detour_path
+                        robot["path_idx"] = 0
+                        next_idx = 1
+                        next_node = robot["path"][next_idx]
 
         holder_id = self.node_locks[next_node]
 
@@ -679,32 +684,43 @@ class FleetManagementSystem(Node):
         self._send_move_command(robot_id, next_node, is_final_hop)
         self._clear_deadlock_alert(robot_id, now)
 
+    def _near_lane_zone_nodes(self, rack_prefix):
+        """rack_prefix(예: "RackA")의 근접 통로를 하나의 "영역"으로 보고,
+        그 영역에 속하는 노드 전체를 반환한다 — HUB_X→RackX_280 진입 구간
+        (세분화된 중간 칸들) + 280/260/240 체크포인트 + OUT. 이 영역
+        안 어디에든 로봇이 있으면 실제로 통로를 막고 있는 것과 같다
+        (2026-07-27, 사용자 제안 - "rack280 진입~rack240 퇴장까지를 하나의
+        영역으로 보고 그 안에 amr이 있는지로 판단"). NODE_GRAPH는 시작
+        이후 안 바뀌므로 rack_prefix당 한 번만 계산해서 캐싱한다."""
+        cached = self._near_lane_zone_cache.get(rack_prefix)
+        if cached is not None:
+            return cached
+        shoe_type_letter = rack_prefix[len("Rack"):]
+        entry_segment_prefix = f"HUB_{shoe_type_letter}__{rack_prefix}_280_"
+        zone = [node_id for node_id in NODE_GRAPH if node_id.startswith(entry_segment_prefix)]
+        zone += [f"{rack_prefix}_{size}" for size in _RACK_SIZES_IN_ORDER]
+        zone.append(f"{rack_prefix}_OUT")
+        self._near_lane_zone_cache[rack_prefix] = zone
+        return zone
+
+    def _near_lane_occupied(self, rack_prefix, robot_id=None):
+        """_near_lane_zone_nodes 영역 안에 robot_id 자신 말고 다른 로봇이
+        하나라도 있으면 True. robot_id를 넘기면 "그 락을 자기 자신이 쥐고
+        있는 경우"는 점유로 치지 않는다 — 같은 트립 안에서 같은 사이즈
+        신발을 연달아 내려놓을 때, 방금 자신이 도착한 그 자리를 "남이
+        점유 중"으로 오판해 근접 레인 전체를 통과해 픽업까지 돌아갔다가
+        detour로 재진입하는 거대한 우회를 막기 위함이다."""
+        return any(
+            self.node_locks.get(node_id) not in (None, robot_id)
+            for node_id in self._near_lane_zone_nodes(rack_prefix)
+        )
+
     def _pick_rack_target(self, canonical_target, robot_id=None):
-        """canonical_target(예: RackA_240)에 대해 근접/detour 중 실제로 쓸 노드를 고른다.
-
-        근접 통로는 280→260→240 순서의 일방통행 사슬이라, 목표가 240이면 280과
-        260을 실제 노드로 반드시 거쳐가야(락을 잡아야) 한다. 그래서 "280 체크포인트"
-        하나만 보면 안 되고, 체크포인트부터 목표 사이즈까지 근접 레인 구간
-        전부가 비어있어야 근접을 쓴다 — 예를 들어 260 배치를 든 로봇이 근접
-        260에서 오래 머무르는(같은 자리에 여러 개 연달아 내려놓는) 동안, 뒤따라와
-        240을 배정받은 다른 로봇이 280은 비었다는 이유만으로 근접에 진입했다가
-        260에서 오래 막히는 문제가 있었다(240은 260에 내려놓을 일이 없는데도).
-        중간 어느 한 곳이라도 점유 중이면 그 지점부터는 못 지나가므로 바로
-        detour로 보낸다.
-
-        robot_id를 넘기면 "그 락을 자기 자신이 쥐고 있는 경우"는 점유로 치지
-        않는다 — 같은 트립 안에서 같은 사이즈 신발을 연달아 내려놓을 때, 방금
-        자신이 도착한 그 자리를 "남이 점유 중"으로 오판해 근접 레인 전체를
-        통과해 픽업까지 돌아갔다가 detour로 재진입하는 거대한 우회를 막기
-        위함이다(자기 자신이니 이동 없이 같은 자리에 이어서 내려놓으면 된다).
-        새로 배정되는 로봇(아직 어떤 랙 락도 쥐고 있지 않음)에는 영향 없다.
-        """
-        rack_prefix, target_size = canonical_target.split("_")  # "RackA_240" → "RackA", "240"
-        for size in _RACK_SIZES_IN_ORDER:  # ["280", "260", "240"] 순서로 체크포인트부터 검사
-            if self.node_locks.get(f"{rack_prefix}_{size}") not in (None, robot_id):
-                return f"{canonical_target}_detour"
-            if size == target_size:
-                break
+        """canonical_target(예: RackA_240)에 대해 근접/detour 중 실제로 쓸
+        노드를 고른다 - 근접 통로 영역(_near_lane_zone_nodes) 안에 자기
+        자신 말고 다른 로봇이 하나라도 있으면 detour, 아니면 근접."""
+        if self._near_lane_occupied(canonical_target.split("_")[0], robot_id):
+            return f"{canonical_target}_detour"
         return canonical_target
 
     def _pick_pickup_target(self, shoe_type):

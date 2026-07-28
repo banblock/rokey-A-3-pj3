@@ -118,13 +118,13 @@ UR5E_JOINT_NAMES = [
 ]
 SPAWN_JOINT_ANGLES_DEG = [180, -90, 90, -90, -90, 0]  # build_v3_assembler.py와 동일해야 함
 RETURN_HOME_STEPS = 70
-RETURN_HOME_TOLERANCE_RAD = 0.02
+RETURN_HOME_TOLERANCE_RAD = 0.05
 
 # pallet처럼 멀리/높이 있는 목표를 향할 때 RMPflow가 가끔(특이점 근처로
 # 보임) 불안정해져서 관절 속도가 초당 10rad/s 이상으로 치솟는 게 헤드리스로
 # 확인됐다(장애물 회피를 꺼도 재현 - RMPflow 자체 불안정) - 원인을 RMPflow
 # 내부에서 고치는 대신, 매 스텝 명령을 이 이상 못 튀게 직접 제한한다.
-MAX_JOINT_STEP_RAD = 0.2  # 60Hz 기준 대략 7.2rad/s에 해당(기존 0.03=1.8rad/s에서 완화)
+MAX_JOINT_STEP_RAD = 1  # 60Hz 기준 대략 7.2rad/s에 해당(기존 0.03=1.8rad/s에서 완화)
 
 # 위의 여러 안전장치(팔레트 장애물 등록, 홈 복귀, 속도 클램프)를 적용해도
 # RMPflow가 가끔 이번 시도에서만 흡착에 실패할 수 있다 - "픽업은 무조건
@@ -192,9 +192,16 @@ _STORAGE_SLOT_Z_COMPENSATION = [-0.026, -0.026, -0.026, -0.026, -0.026, -0.026]
 # 전체(레이어1,2)에도 동일하게 적용한다 - Newton 반복으로 한 번 더
 # 다듬으려 했더니 층 간 상호의존성 때문에 오차가 폭발적으로 커진 적이
 # 있어서(14~38cm), 지금은 1차 실측값만 쓴다.
+# 2026-07-27: 두 컬럼 사이 간격을 넓혀달라는 요청(사용자 확인 - GUI 스크린샷
+# "0/2/4와 1/3/5 사이에 간격 두기") - check_column_gap.py로 실측한 StorageBox
+# 로컬 bbox(Y: -0.24~0.24)와 실제 박스 위치를 비교하니, col1(슬롯1/3/5)은
+# 오른쪽 가장자리까지 여유가 0.5cm뿐이라 못 움직이고, col0(슬롯0/2/4)은
+# 왼쪽 가장자리까지 5.7cm 여유가 있었다. col1은 그대로 두고 col0만 왼쪽으로
+# 더 밀어서(Y 보정을 0.0249 -> -0.02로, 약 4.5cm) 간격을 벌렸다 - 실측
+# 재확인 필요(check_column_gap.py).
 _STORAGE_SLOT_XY_COMPENSATION_PER_COL = [
-    (0.0256, 0.0249),  # col0 (슬롯0/2/4) - 슬롯0(레이어0) 실측
-    (0.0084, 0.0026),  # col1 (슬롯1/3/5) - 슬롯1(레이어0) 실측
+    (0.0256, -0.02),  # col0 (슬롯0/2/4) - 슬롯0(레이어0) 실측 + 간격 확보용 추가 이동
+    (0.0084, 0.0026),  # col1 (슬롯1/3/5) - 슬롯1(레이어0) 실측, 가장자리에 가까워 그대로 유지
 ]
 STORAGE_SLOT_LOCAL_POSITIONS = [
     np.array([
@@ -245,7 +252,7 @@ FILLED_SLOT_OBSTACLE_TOP_MARGIN_M = 0.03
 # 벽에 스치기 쉽다(GUI에서 확인) - RMPflow의 장애물 회피에 통째로 맡기는
 # 대신, 먼저 벽 높이보다 확실히 위(목표와 같은 XY, 벽 위)로 이동시킨 뒤
 # 그 지점에서 수직으로만 내려가게 직접 경로를 지정한다.
-SAFE_HOVER_MARGIN_M = 0.20
+SAFE_HOVER_MARGIN_M = 0.30
 HOVER_STEP_BUDGET = 300
 HOVER_TOLERANCE_M = 0.03
 
@@ -713,6 +720,27 @@ class AmrArmController:
         wall_top_z = rng.GetMax()[2]
         return float(wall_top_z + SAFE_HOVER_MARGIN_M)
 
+    def _compute_cycle_hover_height(self, pallet_path: str, slot_index: int) -> float:
+        """이번 사이클의 h1(호버 높이)을 pallet 쪽과 저장소 슬롯 쪽 중 더 높은
+        쪽 기준으로 계산한다.
+
+        h1은 reset() 시점에 한 번만 정해져서 사이클 전체(pallet 구간 +
+        저장소 구간)에 그대로 쓰이는데, 원래는 pallet 벽 높이만 보고
+        계산해서 저장소 목표 높이는 고려하지 않았다. 그 결과(2026-07-27,
+        check_hover_heights.py로 실측):
+        - 낮은 레이어(0/1)는 h1이 목표보다 27cm 가까이 높아서 불필요하게
+          멀리 오르내리고(잔여 수렴 지연을 키우는 원인 중 하나로 보임)
+        - 가장 높은 레이어(2)는 h1이 목표보다 오히려 3.2cm *낮아서*,
+          event6(h1→목표 보간)이 "하강"이 아니라 실제로는 "상승"이
+          돼버리는 역전이 있었다(사용자 확인 - "원래는 위→하강해야
+          하는데 이상하게 움직인다"의 원인으로 보임).
+        둘 중 더 높은 쪽 + 여유(SAFE_HOVER_MARGIN_M)로 h1을 잡으면, 항상
+        양쪽 목표보다 위에서 접근하는 원래 의도를 지키면서 불필요한
+        초과분만 줄어든다."""
+        pallet_hover = self._compute_safe_hover_height(pallet_path)
+        slot_target_z = float(self._compute_slot_target(slot_index)[2])
+        return max(pallet_hover, slot_target_z + SAFE_HOVER_MARGIN_M)
+
     def _compute_slot_target(self, slot_index: int) -> np.ndarray:
         """슬롯의 chassis-local 오프셋을 실제 world 좌표로 바꾼다.
 
@@ -1013,9 +1041,12 @@ class AmrArmController:
         # PICKUP_A라 우연히 안 드러났었다). 그래서 _refresh_base_pose_and_
         # obstacle()을 reset() "전"이 아니라 반드시 "후"에 호출해야 한다 -
         # 전에 호출하면 reset()이 그 갱신을 곧바로 덮어써버린다.
-        # end_effector_initial_height도 매번 pallet 벽 높이에 맞게 다시
-        # 계산해서 넘긴다(위 _compute_safe_hover_height 설명 참고).
-        self._controller.reset(end_effector_initial_height=self._compute_safe_hover_height(PICK_PALLET_PATH))
+        # end_effector_initial_height도 매번 pallet 벽 높이와 이번에 갈
+        # 저장소 슬롯 높이 중 더 높은 쪽으로 다시 계산해서 넘긴다(위
+        # _compute_cycle_hover_height 설명 참고).
+        self._controller.reset(
+            end_effector_initial_height=self._compute_cycle_hover_height(PICK_PALLET_PATH, self._current_slot_index)
+        )
         self._refresh_base_pose_and_obstacle()
         self._register_pallet_obstacles()
         self._register_filled_slot_obstacles()
@@ -1066,10 +1097,13 @@ class AmrArmController:
         # __init__(스폰) 시점 값으로 되돌려버린다 - 그래서
         # _refresh_base_pose_and_obstacle()은 반드시 reset() "후"에 호출해야
         # 한다(_begin_next_pick_repetition과 동일한 이유, 2026-07-27 발견).
-        # end_effector_initial_height도 이번에 놓을 pallet 벽 높이에 맞게
-        # 다시 계산해서 넘긴다(위 _compute_safe_hover_height 설명 참고).
+        # end_effector_initial_height도 이번에 놓을 pallet 벽 높이와 지금
+        # 꺼내는 저장소 슬롯 높이 중 더 높은 쪽으로 다시 계산해서 넘긴다
+        # (위 _compute_cycle_hover_height 설명 참고).
         target_pallet_path = PLACE_PALLET_PATHS[shelf_num]
-        self._controller.reset(end_effector_initial_height=self._compute_safe_hover_height(target_pallet_path))
+        self._controller.reset(
+            end_effector_initial_height=self._compute_cycle_hover_height(target_pallet_path, slot_index)
+        )
         self._refresh_base_pose_and_obstacle()
         self._register_pallet_obstacles()
         self._register_filled_slot_obstacles()
