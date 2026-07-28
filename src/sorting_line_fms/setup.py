@@ -13,17 +13,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        # fleet_config.py는 isaacpjt/sorting_line/에 있는 순수 데이터 모듈(rclpy 의존
-        # 없음, Isaac Sim 스크립트도 그대로 가져다 씀) — 패키지 안으로 옮기지 않고
-        # share/에 설치해서 ament_index로 찾아 쓴다(설치 방식과 무관하게 항상 동작).
-        ('share/' + package_name, ['../../isaacpjt/sorting_line/fleet_config.py']),
-        # crossing_test_config.py도 같은 이유(순수 데이터 모듈, Isaac Sim 스크립트와
-        # 공유)로 fleet_config.py와 나란히 설치한다 — edge_conflict 테스트 전용
-        # 그래프(crossing_test_fms.py, fleet_driver.py --ros-args -p config_module:=
-        # crossing_test_config 로 사용).
-        # fleet_config_test1.py — 신발 종류 1개(A)만 남긴 최소 테스트용 그래프.
-        # fms_node.py가 지금 이걸 import해서 쓰므로 반드시 같이 설치해야 한다.
-        ('share/' + package_name, ['../../isaacpjt/sorting_line/fleet_config_test1.py']),
+        ('share/' + package_name, ['../../isaacpjt/mainsim/fleet_config_test1.py']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
