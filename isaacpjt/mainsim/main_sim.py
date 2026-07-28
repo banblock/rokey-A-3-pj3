@@ -69,12 +69,12 @@ WHEEL_BASE_M = 0.4132  # 트랙폭(좌우 구동 바퀴 간격)
 WHEEL_JOINT_NAMES = ["joint_wheel_left", "joint_wheel_right"]
 
 NOVA_CARTER_USD = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/nova-carter/nova_carter_ur5e_surface_gripper.usd"
+    "./nova_carter_ur5e_surface_gripper.usd"
 )
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/demo0726_v2/demo0726_v2.usd"
+    "./demo0728_v3.usd"
 )
 
 # NODE_GRAPH 지점 시각화용 색상 — 노드 종류가 아니라 담당 신발 종류(A/B/C/D)로
