@@ -169,14 +169,25 @@ class PickPlaceController(manipulators_controllers.PickPlaceController):
         contact_now = self._is_contact_now()
 
         # attempt to grab on ANY contact during the approach/descend/settle/
-        # close phases (0-3) - matches how a real suction cup behaves (grabs
-        # the instant it touches something), instead of only trying during
-        # the scripted "close" phase (event==3), by which point the object
-        # may have already been bumped away by ordinary rigid-body collision
-        # during approach/descend. Gated to events <= 3 so this doesn't fight
-        # the deliberate release at event 7 (the object is still physically
-        # touching the trigger right after being let go, until it separates).
-        if contact_now and self._event <= 3 and not self._gripper.is_closed():
+        # close/lift phases (0-4) - matches how a real suction cup behaves
+        # (grabs the instant it touches something), instead of only trying
+        # during the scripted "close" phase (event==3), by which point the
+        # object may have already been bumped away by ordinary rigid-body
+        # collision during approach/descend. Extended from <=3 to <=4
+        # (2026-07-27, storage retrieval bug): for targets far below the
+        # hover height (e.g. the bottom-layer storage slot, much lower than
+        # a tall rack pallet's wall - hover height is sized off the *place*
+        # pallet, not the pick source), event1's fixed-step descend budget
+        # can undershoot and never register contact during 0-3, yet RMPflow's
+        # residual convergence lag keeps the arm sinking toward the real
+        # target even after the state machine has already moved on to event4
+        # (lift) - contact then lands squarely inside event4, which used to
+        # be outside the grab window entirely (confirmed via headless
+        # per-event logging: contact_seen only flipped true partway through
+        # event4, gripper stayed open the rest of the cycle). event4 is still
+        # safely before event 7's release, so this doesn't fight that gate's
+        # original purpose.
+        if contact_now and self._event <= 4 and not self._gripper.is_closed():
             self._gripper.close()
 
         # the FIRST time contact happens during the descend phase, capture the

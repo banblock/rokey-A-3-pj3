@@ -362,6 +362,7 @@ class AmrArmController:
         self._grasp_confirmed = False
         self._grasp_rel_rot: Optional[Gf.Quatd] = None
         self._welded_this_rep = False
+        self._unwelded_this_rep = False
         self._retry_count = 0
         self._cycle_target: Optional[np.ndarray] = None
 
@@ -372,6 +373,7 @@ class AmrArmController:
         self._slot_fill_order: List[int] = []
         self._current_box_prim_path: Optional[str] = None
         self._current_slot_index: Optional[int] = None
+        self._current_shelf_num: Optional[int] = None
         self._pick_remaining = 0
         self._cooldown_remaining = 0
         self._return_home_steps_left = 0
@@ -969,7 +971,14 @@ class AmrArmController:
         box_prim_path = self._slot_box_paths[slot_index]
         if box_prim_path is None:
             return False
-        self._unweld_slot(slot_index)
+        self._retry_count = 0
+        self._current_shelf_num = shelf_num
+        self._begin_place_attempt(slot_index, box_prim_path, shelf_num)
+        return True
+
+    def _begin_place_attempt(self, slot_index: int, box_prim_path: str, shelf_num: int) -> None:
+        """start_place()의 실제 준비 작업 - 최초 시도와 흡착 실패 재시도
+        (_retry_count, update() 참고) 양쪽에서 재사용한다."""
         self._current_slot_index = slot_index
         self._current_box_prim_path = box_prim_path
         # NOTE: PickPlaceController.reset()이 내부적으로 RmpFlow.reset()도
@@ -990,9 +999,19 @@ class AmrArmController:
         self._contact_seen = False
         self._grasp_confirmed = False
         self._grasp_rel_rot = None
+        # 예전엔 트립 시작 시점(여기)에 바로 StorageWeldJoint를 풀었는데,
+        # 그러면 접근(event0/1, ~2초) 내내 박스가 아무 지지 없이 자유낙하해서
+        # 팔이 도착했을 땐 이미 엉뚱한 곳으로 떨어져 있어 제대로 못 집는
+        # 문제가 있었다(2026-07-27, 사용자 확인 - "임시 저장소에서 rack으로
+        # 박스 내릴 때 박스를 제대로 못 집어"). 그리퍼가 실제로 흡착에
+        # 성공한(_grasp_confirmed) 그 순간까지는 StorageWeldJoint를 그대로
+        # 둔다 - 흡착 중엔 GraspJoint와 StorageWeldJoint가 잠깐 같이
+        # 박스를 붙들어도 문제없고(둘 다 FixedJoint), 흡착이 확정된 뒤에야
+        # unweld해서 "창고에 고정된 채"에서 "그리퍼가 붙든 채"로 끊김 없이
+        # 넘어간다(update()의 _grasp_confirmed 처리 참고).
+        self._unwelded_this_rep = False
         self._cycle_target = self._nearest_point_on_pallet_top(target_pallet_path)
         self._phase = "place_from_storage"
-        return True
 
     def update(self) -> Optional[str]:
         """매 프레임 호출. "pick_done"/"place_done"/"pick_failed" 이벤트가 막
@@ -1025,6 +1044,9 @@ class AmrArmController:
             if not self._grasp_confirmed:
                 self._grasp_rel_rot = self._compute_grasp_rel_rot()
             self._grasp_confirmed = True
+            if self._phase == "place_from_storage" and not self._unwelded_this_rep:
+                self._unweld_slot(self._current_slot_index)
+                self._unwelded_this_rep = True
 
         # base PickPlaceController는 event가 0/1일 때만 self._h0(상승 시작
         # 기준 높이)를 picking_position 기준으로 갱신하고, 그 뒤(정지 대기
