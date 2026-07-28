@@ -205,7 +205,7 @@ class FleetManagementSystem(Node):
         # 이 토픽 하나로만 결정한다.
         self.create_subscription(Bool, "/control/emergency_stop", self._on_emergency_stop, RELIABLE_EVENT_QOS)
         # FMS → 메인 컨트롤 노드: 배치 작업 완료 / 교착 상태 발생 알림 (응답 불필요).
-        self.amr_state_client = self.create_client(AmrState, "/control/amr_state")
+        self.amr_state_client = self.create_client(AmrState, "/fms/amr_state")
         # "AMR이 PICKUP에 도착해 어떤 신발을 실어야 하는지" / "AMR이 저장소에
         # 도착해 신발을 내려놓았는지"를 시뮬레이션에 알리는 이벤트 토픽 —
         # 원래는 시뮬레이션이 매 프레임 서비스(Trigger)로 물어보는(폴링) 구조였는데,

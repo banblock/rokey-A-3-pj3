@@ -5,12 +5,15 @@
 fleet_config.py에서 신발 종류를 A 하나만 남긴 최소 테스트용 버전 — 라인 1개
 (랙 1개, 로봇 2대)만 있는 상황을 빠르게 재현/디버깅하기 위함. B/C/D의
 PICKUP/HUB/Rack 블록을 통째로 지웠고, A가 SHOE_TYPES 맨 앞이었기 때문에
-로봇 번호(amr_1, amr_2)는 원본과 동일하게 유지된다. ROBOTS_PER_TYPE은
-원본과 동일하게 2로 뒀다 — 종류를 1개로 줄인 목적이 "여러 종류가 뒤섞이는
-경우"를 배제하고 "같은 종류 로봇 2대끼리의 상호작용"(근접/detour 경쟁,
-배치 디스패치 등)만 집중적으로 테스트하기 위함이라, 로봇 수까지 줄이면 그
-테스트 대상 자체가 없어진다. 로봇 1대만 필요하면 ROBOTS_PER_TYPE만 1로
-바꾸면 된다(그 값 하나로 전체가 자동으로 맞춰짐).
+로봇 번호(amr_1, amr_2, ...)는 원본과 동일하게 유지된다. ROBOTS_PER_TYPE은
+현재 3(2026-07-28, 로봇 3대로 확장) — 종류를 1개로 줄인 목적이 "여러 종류가
+뒤섞이는 경우"를 배제하고 "같은 종류 로봇 여러 대끼리의 상호작용"(근접/detour
+경쟁, 배치 디스패치 등)만 집중적으로 테스트하기 위함이다. ROBOTS_PER_TYPE 값
+하나만 바꾸면 ROBOT_SHOE_TYPE/PICKUP_WAIT_SLOTS/HOME_SLOTS/ROBOT_HOME_NODE는
+전부 자동으로 맞춰지지만, ROBOTS_PER_TYPE >= 3일 때 필요한 추가 대기 슬롯
+노드(PICKUP_WAIT2_A 등)는 NODE_GRAPH에 직접 좌표를 넣어줘야 한다 — 실제
+컨베이어/픽업 구역의 물리적 여유 공간에 맞춰 손으로 튜닝해야 하는 값이라
+자동 생성하지 않는다.
 
 rclpy, m0609_interfaces 등 ROS2 관련 패키지를 절대 import하지 않는다 — Isaac Sim은
 자체 번들 파이썬(3.11)을 쓰는데, 시스템 rclpy는 다른 파이썬 ABI(3.10)로 빌드돼
@@ -26,7 +29,7 @@ import math
 # ║  A. 로봇 배정 (신발 종류 1개, 로봇 2대 전담)                          ║
 # ╚══════════════════════════════════════════════════════════════╝
 SHOE_TYPES = ["A"]
-ROBOTS_PER_TYPE = 2
+ROBOTS_PER_TYPE = 3
 
 ROBOT_SHOE_TYPE = {
     f"amr_{i + 1}": shoe_type
@@ -117,9 +120,12 @@ NODE_GRAPH = {
     "RackA_260_detour":   {"position": (-1.0, -6.7, 1.03), "neighbors": ["RackA_240_detour"]},
     "RackA_240_detour":   {"position": (-4.5, -6.7, 1.03), "neighbors": ["RackA_OUT"]},
     "RackA_OUT":     {"position": (-7.25, -4.3, 0.0), "neighbors": ["PICKUP_A_APPROACH"]},
-    "PICKUP_A_APPROACH":    {"position": (-4.3, -2.33, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
+    "PICKUP_A_APPROACH":    {"position": (-4.3, -2.33, 1.03), "neighbors": ["PICKUP_WAIT2_A"]},
     "PICKUP_WAIT_A":    {"position": (3.1, -2.9, 1.03), "neighbors": ["PICKUP_A"]},
-    
+    # ROBOTS_PER_TYPE=3용 추가 대기 슬롯 - PICKUP_EXTRA_WAIT_NODES가 만드는
+    # 이름("PICKUP_WAIT2_A")과 반드시 일치해야 한다(HOME_SLOTS/PICKUP_WAIT_SLOTS가
+    # 그 이름으로 이 노드를 찾는다).
+    "PICKUP_WAIT2_A":    {"position": (0.98, -2.73, 1.03), "neighbors": ["PICKUP_WAIT_A"]},
 }
 
 # 배치(5켤레) 작업을 전부 마친 로봇, 혹은 그냥 다른 로봇에게 PICKUP_X를 양보해야
@@ -295,11 +301,19 @@ for _shoe_type in SHOE_TYPES:
     _subdivide_edge(f"HUB_{_shoe_type}", f"Rack{_shoe_type}_280", _MAIN_LINE_SEGMENT_M)
     _subdivide_edge(f"HUB_{_shoe_type}", f"HUB_{_shoe_type}_detour", _MAIN_LINE_SEGMENT_M)
     _subdivide_edge(f"HUB_{_shoe_type}_detour", f"Rack{_shoe_type}_280_detour", _MAIN_LINE_SEGMENT_M)
-    # 복귀 본선(OUT → PICKUP_X_APPROACH → PICKUP_WAIT_X → PICKUP_X)도 같은
-    # 이유로 세분화한다 — PICKUP_X_APPROACH는 이제 PICKUP_WAIT_X 하나로만
-    # 이어지므로(PICKUP_X 직행 갈래 없음) 갈림 없는 단일 경로만 쪼개면 된다.
+    # 복귀 본선(OUT → PICKUP_X_APPROACH → (WAIT2_X → ...) → PICKUP_WAIT_X →
+    # PICKUP_X)도 같은 이유로 세분화한다 — 갈림 없는 단일 경로라 APPROACH부터
+    # PICKUP_WAIT_X까지, 사이에 낀 추가 대기 슬롯(WAIT2_X, WAIT3_X, ...)까지
+    # 전부 포함해서 순서대로 한 홉씩 쪼개면 된다. ROBOTS_PER_TYPE=2면 추가
+    # 슬롯이 없어서 APPROACH → PICKUP_WAIT_X 한 홉만 쪼개는 것과 동일하다.
     _subdivide_edge(f"Rack{_shoe_type}_OUT", f"PICKUP_{_shoe_type}_APPROACH", _MAIN_LINE_SEGMENT_M)
-    _subdivide_edge(f"PICKUP_{_shoe_type}_APPROACH", PICKUP_WAIT_NODE[_shoe_type], _MAIN_LINE_SEGMENT_M)
+    _wait_chain = (
+        [f"PICKUP_{_shoe_type}_APPROACH"]
+        + list(reversed(PICKUP_EXTRA_WAIT_NODES[_shoe_type]))
+        + [PICKUP_WAIT_NODE[_shoe_type]]
+    )
+    for _wc_i in range(len(_wait_chain) - 1):
+        _subdivide_edge(_wait_chain[_wc_i], _wait_chain[_wc_i + 1], _MAIN_LINE_SEGMENT_M)
 
 
 def robot_spawn_yaw(robot_id):

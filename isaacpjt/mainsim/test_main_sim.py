@@ -49,7 +49,7 @@ from fleet_config_test1 import (
     robot_spawn_yaw,
 )
 
-from simulation_node import (
+from simulation_node_13 import (
     SimulationNode,
     create_simulation_node,
     prepare_stage,
@@ -66,7 +66,7 @@ NOVA_CARTER_USD = _assets_root_path + "/Isaac/Robots/NVIDIA/NovaCarter/nova_cart
 
 
 USD_PATH = os.path.expanduser(
-    "~/cobot3_ws/isaacpjt/basic/heu/demo0728_v3.usd"
+    "~/cobot3_ws/isaacpjt/basic/heu/demo0726_v2.usd"
 )
 
 

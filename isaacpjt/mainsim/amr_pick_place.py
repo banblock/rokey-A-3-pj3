@@ -800,7 +800,7 @@ class AmrArmController:
             position=spawn_pos,
             orientation=orientation,
             scale=self._box_size,
-            color=np.array([0.0, 0.0, 1.0]),
+            color=np.array([1.0, 1.0, 0.0]),
             mass=1.1,
         )
         # kinematic으로 스폰했다가 흡착 시점에 dynamic으로 되돌리는 방식을

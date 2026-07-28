@@ -166,9 +166,9 @@ SHOE_STOP_TARGET_Y: Final[float] = 2.748851058482757
 # =====================================================================
 
 SHOE_PATHS: Final[tuple[str, ...]] = (
-    "/World/shoes/sneakers",
     "/World/shoes/sneaker_0001_red_240_ok_01",
     "/World/shoes/sneaker_0001_red_240_ok_02",
+    "/World/shoes/sneaker_0001_red_240_ok_03",
 )
 
 # 신발 활성화 시 랜덤으로 뽑는 사이즈(mm, 실제 발길이 - 240/260/280 사이즈
