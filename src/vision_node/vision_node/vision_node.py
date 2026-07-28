@@ -39,7 +39,7 @@ class VisionNode(Node):
         self.declare_parameter('model_path', '/home/rokey/cobot3_ws/src/vision_node/resource/best_task1.pt')
         self.declare_parameter('model_path_stage2', '/home/rokey/cobot3_ws/src/vision_node/resource/best_task2.pt')
         self.declare_parameter('image_size', 960)
-        self.declare_parameter('image_size_stage2', 320)
+        self.declare_parameter('image_size_stage2', 480)
         self.declare_parameter('stage2_pad_ratio', 0.3)
         # 검사할 때마다 디스크에 디버그 이미지를 저장하면(cv2.imwrite) I/O 때문에 느려진다.
         # publish는 가벼우니 기본으로 두고, 디스크 저장은 필요할 때만 켠다.

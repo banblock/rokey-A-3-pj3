@@ -68,7 +68,7 @@ PLACEMENT_Z = 1.89
 SHOE_ASSET_URL = "/home/rokey/Downloads/sneaker_240.usd"
 
 NUM_SHOES_PER_FRAME = 1      # 한 프레임에 흩뿌릴 신발 켤레 수 (좁은 컨베이어라 2켤레로 축소)
-DEFECT_RATIO = 0       # 훼손(tear 또는 scratch) 비율 (클래스 균형용, 필요시 조정)
+DEFECT_RATIO = 0.7       # 훼손(tear 또는 scratch) 비율 (클래스 균형용, 필요시 조정)
 # "shoe"는 신발 전체(항상 부여, 정상/훼손 구분 없음). tear/scratch는 훼손 부위에 실제로
 # 만드는 별도의 작은 프림(패치)에 붙이는 라벨이라, bbox/segmentation이 훼손 부위만 잡는다.
 # (GeomSubset에 라벨을 걸어봤는데 Replicator의 instance_segmentation/bbox 애노테이터가
@@ -484,8 +484,8 @@ def run():
     # 확인했으므로 GUI는 그냥 Real-Time(RayTracedLighting)으로 켠다.
     if args.headless:
         carb.settings.get_settings().set("/rtx/rendermode", "PathTracing")
-        carb.settings.get_settings().set("/rtx/pathtracing/spp", 32)
-        carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", 32)
+        carb.settings.get_settings().set("/rtx/pathtracing/spp", 16)
+        carb.settings.get_settings().set("/rtx/pathtracing/totalSpp", 16)
     else:
         carb.settings.get_settings().set("/rtx/rendermode", "RaytracedLighting")
     # 실제 환경(RectLight 등 기존 조명·바닥 재질)을 그대로 쓰므로 별도 조명/바닥을 만들지 않는다.

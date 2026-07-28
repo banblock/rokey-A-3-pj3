@@ -28,7 +28,7 @@ import numpy as np
 CLASS_NAMES = ["shoe", "tear"]
 SHOE_ID, TEAR_ID = 0, 1
 OUT_CLASS_NAMES = ["tear"]
-CROP_OUT_SIZE = 320
+CROP_OUT_SIZE = 480
 # vision_node.py의 stage2_pad_ratio 기본값과 반드시 같아야 한다 (infer_cascade.py의
 # --pad_ratio 기본값도 마찬가지). 여기서 값이 달라지면 다시 학습/추론 배율이 어긋난다.
 STAGE2_PAD_RATIO = 0.3
