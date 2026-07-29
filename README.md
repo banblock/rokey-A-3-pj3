@@ -120,6 +120,21 @@ source install/setup.bash
 ### 3. MongoDB 실행
 
 `recycle_controller`가 접속하는 기본값(`db_manager.py`)은 로컬 27018 포트입니다. 예: Docker로 실행 시
+#### 최초 한 번: MongoDB 이미지 받기
+
+```bash
+docker pull mongo:8
+```
+
+확인:
+
+```bash
+docker images | grep mongo
+```
+
+#### 최초 한 번: 컨테이너 생성
+
+볼륨 없이 생성하는 현재 구성입니다.
 
 ```bash
 docker run -d --name inventory-mongo -p 27018:27017 \
@@ -148,6 +163,19 @@ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$HOME/dev_ws/isaac_sim/isaacsim/_build/l
 ### 2. MongoDB 실행 확인
 
 위 [의존성 설치 3번](#3-mongodb-실행)의 컨테이너/인스턴스가 떠 있어야 `control_node`가 정상 기동합니다.
+#### Docker 일반 실행 순서
+
+PC를 켠 후:
+
+```bash
+docker start mongodb
+```
+
+이미 자동 실행 중인지 확인:
+
+```bash
+docker ps --filter name=mongodb
+```
 
 ### 3. ROS 2 노드 전체 실행 (Vision + Control + FMS + UI)
 
