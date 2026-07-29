@@ -95,7 +95,7 @@ flowchart TD
 
 ### 0. Git Clone
 
-YOLOv8 추론, 영상 처리, DB 연동에 필요한 패키지입니다.
+git을 cobot3_ws 폴더로 불러옵니다
 
 ```bash
 git clone https://github.com/banblock/rokey-A-3-pj3.git cobot3_ws
